@@ -1,0 +1,16 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+
+# cogvault derived index (never commit — rebuildable from markdown)
+.cogvault.db
+.cogvault.db-*
+
+# local test artifacts
+_test_tenant/
+tenants/
