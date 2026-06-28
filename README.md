@@ -82,6 +82,19 @@ so it is unsafe for non-English content. Run `cogvault` on your own vault to dec
 COGVAULT_MODEL=BAAI/bge-small-en-v1.5 cogvault index --tenant ~/agent/memory
 ```
 
+**Pin the model per tenant** so it travels with the data instead of relying on every
+command exporting `COGVAULT_MODEL` (forget it once and a model mismatch silently
+re-embeds the whole index). Drop a `.cogvault.toml` at the tenant root:
+
+```toml
+# ~/agent/memory/.cogvault.toml
+model = "BAAI/bge-small-en-v1.5"
+# optional: recursive = true, strip_frontmatter = true, ignore_globs = ["Templates/*"]
+```
+
+Now `cogvault search --tenant ~/agent/memory "…"` uses the right model with no env var.
+Precedence: explicit `--model` / `$COGVAULT_MODEL` > `.cogvault.toml` > built-in default.
+
 ## Install
 
 ```bash

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0 — 2026-06-28 — per-tenant config
+
+- **`.cogvault.toml` per-tenant config.** A tenant can now declare its embedding
+  model (and other `Config` fields) in a `.cogvault.toml` at the tenant root, so the
+  model travels WITH the data instead of relying on every caller exporting
+  `COGVAULT_MODEL`. A bare `cogvault search --tenant <dir>` now picks up the right
+  model automatically. Without this, omitting the env var silently fell back to the
+  multilingual default, and the model mismatch triggered a full re-embed wipe that
+  flapped against the MCP tool's index.
+  - Precedence: explicit `Config(...)` / `--model` / `$COGVAULT_MODEL` > `.cogvault.toml` > defaults.
+  - Allowlisted keys only (model, dim, chunk/pool sizes, decay, mmr, recursive,
+    strip_frontmatter, ignore_globs); `db_dir` is intentionally NOT settable from the file.
+  - TOML via stdlib `tomllib` (3.11+) with a minimal flat-key fallback for 3.10.
+  - cogvault never *writes* the file — read-only if present.
+  - New `--model` CLI flag for one-off overrides. New public `apply_tenant_config()`.
+
 ## 0.4.0 — 2026-06-27 — observability
 
 - **Query log.** Every `recall` appends one JSONL line to

@@ -31,6 +31,111 @@ def _default_model() -> str:
     return os.environ.get("COGVAULT_MODEL", DEFAULT_MODEL)
 
 
+# Per-tenant config: a `.cogvault.toml` in the tenant dir lets the model (and other
+# Config fields) travel WITH the data, instead of relying on every caller exporting
+# COGVAULT_MODEL. Without it, a bare CLI call falls back to DEFAULT_MODEL and a
+# model-mismatch triggers a full re-embed wipe — the exact footgun this file prevents.
+TENANT_CONFIG_NAME = ".cogvault.toml"
+
+# Only these Config fields may be set from a tenant config file. Keep this allowlist
+# tight: it is data that ships next to the markdown, so it must not be able to point
+# the index cache elsewhere (db_dir) or do anything surprising.
+_TENANT_CONFIG_KEYS = {
+    "model": str, "dim": int, "chunk_chars": int, "rrf_k": int,
+    "vec_pool": int, "fts_pool": int, "half_life_days": float, "mmr_lambda": float,
+    "snippet_chars": int, "evergreen_re": str, "recursive": bool,
+    "strip_frontmatter": bool, "ignore_globs": tuple,
+}
+
+
+def _parse_toml_minimal(text: str) -> dict:
+    """Fallback flat-TOML reader for Python 3.10 (no stdlib tomllib).
+
+    Handles only what a tenant config needs: top-level `key = value` lines where
+    value is a quoted string, int, float, bool, or a simple inline array of strings.
+    Good enough for `model = "..."`; complex TOML should use a 3.11+ runtime.
+    """
+    out: dict = {}
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or "=" not in line or line.startswith("["):
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip()
+        if not val:
+            continue
+        if val[0] in "\"'":
+            out[key] = val.strip("\"'")
+        elif val.startswith("["):
+            inner = val.strip("[]").strip()
+            out[key] = [x.strip().strip("\"'") for x in inner.split(",") if x.strip()]
+        elif val in ("true", "false"):
+            out[key] = (val == "true")
+        else:
+            try:
+                out[key] = int(val)
+            except ValueError:
+                try:
+                    out[key] = float(val)
+                except ValueError:
+                    out[key] = val
+    return out
+
+
+def _load_tenant_config(tenant_dir: str) -> dict:
+    """Read `<tenant>/.cogvault.toml` → a dict of allowlisted Config overrides.
+
+    Returns {} if the file is absent or unreadable. Unknown keys are ignored;
+    known keys are coerced to their declared type (bad values are skipped, not fatal).
+    """
+    path = os.path.join(tenant_dir, TENANT_CONFIG_NAME)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        try:
+            import tomllib            # stdlib, Python 3.11+
+            data = tomllib.loads(raw.decode("utf-8"))
+        except ModuleNotFoundError:
+            data = _parse_toml_minimal(raw.decode("utf-8"))
+    except Exception:
+        return {}
+    out: dict = {}
+    for key, typ in _TENANT_CONFIG_KEYS.items():
+        if key not in data:
+            continue
+        v = data[key]
+        try:
+            out[key] = tuple(v) if typ is tuple else typ(v)
+        except (TypeError, ValueError):
+            continue                  # malformed value → ignore that key, keep going
+    return out
+
+
+def apply_tenant_config(cfg: "Config", tenant_dir: str, respect_env: bool = True,
+                        skip: "set[str] | None" = None) -> "Config":
+    """Mutate `cfg` in place with values from `<tenant>/.cogvault.toml`.
+
+    `skip` names fields the caller has already set explicitly (those must not be
+    overridden by the file). When `respect_env` is True, the `model` field also yields
+    to $COGVAULT_MODEL so an operator's env still wins over the tenant file.
+    Returns the same `cfg` for convenience.
+    """
+    file_cfg = _load_tenant_config(tenant_dir)
+    if not file_cfg:
+        return cfg
+    skip = skip or set()
+    env_model = respect_env and "COGVAULT_MODEL" in os.environ
+    for key, val in file_cfg.items():
+        if key in skip:
+            continue
+        if key == "model" and env_model:
+            continue
+        setattr(cfg, key, val)
+    return cfg
+
+
 @dataclass
 class Config:
     model: str = field(default_factory=_default_model)
@@ -128,6 +233,14 @@ class Vault:
         self.dir = os.path.abspath(os.path.expanduser(tenant_dir))
         self.cfg = config or Config()
         os.makedirs(self.dir, exist_ok=True)
+        # Per-tenant `.cogvault.toml` overrides, applied only when the caller did NOT
+        # pass an explicit Config. Precedence in this (library) path:
+        #   $COGVAULT_MODEL  >  .cogvault.toml  >  built-in defaults.
+        # Callers that build their own Config (the CLI, the MCP server) are responsible
+        # for merging the file themselves via apply_tenant_config() in the right order —
+        # that keeps an explicitly-pinned model (e.g. MCP) authoritative.
+        if config is None:
+            apply_tenant_config(self.cfg, self.dir, respect_env=True)
         # Index DB lives outside the markdown dir (no accidental git commit).
         # Filename is derived from the tenant path so tenants never collide.
         db_dir = os.path.expanduser(self.cfg.db_dir) if self.cfg.db_dir else DEFAULT_DB_DIR

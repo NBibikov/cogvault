@@ -318,6 +318,76 @@ def test_model_switch_rebuild_is_atomic(tmpvault, monkeypatch):
     assert Vault(tmpvault, Config(model=m_old)).search("beta subsystem", k=1)
 
 
+# ---- per-tenant config (.cogvault.toml) -------------------------------------
+
+def test_tenant_config_sets_model(tmpvault):
+    """`.cogvault.toml` makes the model travel with the tenant — a bare Vault()
+    (no Config, no env) picks it up, so the CLI can't accidentally use the default."""
+    _write(tmpvault, ".cogvault.toml", 'model = "BAAI/bge-small-en-v1.5"\n')
+    _write(tmpvault, "x.md", "tenant config model selection content here.")
+    v = Vault(tmpvault)
+    assert v.cfg.model == "BAAI/bge-small-en-v1.5"
+    v.reindex()
+    con = v._connect()
+    meta = {k: val for k, val in con.execute("SELECT key,value FROM meta")}
+    con.close()
+    assert meta.get("model") == "BAAI/bge-small-en-v1.5"
+
+
+def test_tenant_config_does_not_override_explicit(tmpvault):
+    """An explicit Config(model=...) from the caller wins over the file."""
+    _write(tmpvault, ".cogvault.toml", 'model = "BAAI/bge-small-en-v1.5"\n')
+    _write(tmpvault, "x.md", "explicit config beats file content here.")
+    m = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    v = Vault(tmpvault, Config(model=m))
+    assert v.cfg.model == m
+
+
+def test_tenant_config_env_wins(tmpvault, monkeypatch):
+    """$COGVAULT_MODEL wins over the file (explicit operator intent)."""
+    monkeypatch.setenv("COGVAULT_MODEL",
+                       "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    _write(tmpvault, ".cogvault.toml", 'model = "BAAI/bge-small-en-v1.5"\n')
+    _write(tmpvault, "x.md", "env beats file content here.")
+    v = Vault(tmpvault)
+    assert v.cfg.model == "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def test_tenant_config_sets_source_options(tmpvault):
+    """Non-model fields (recursive, strip_frontmatter, ignore_globs) also load."""
+    _write(tmpvault, ".cogvault.toml",
+           'recursive = true\nstrip_frontmatter = true\nignore_globs = ["Templates/*"]\n')
+    v = Vault(tmpvault)
+    assert v.cfg.recursive is True
+    assert v.cfg.strip_frontmatter is True
+    assert v.cfg.ignore_globs == ("Templates/*",)
+
+
+def test_tenant_config_absent_uses_default(tmpvault):
+    """No file → built-in default model (no crash, no change in behavior)."""
+    from cogvault.core import DEFAULT_MODEL
+    _write(tmpvault, "x.md", "no config file default model content.")
+    v = Vault(tmpvault)
+    assert v.cfg.model == DEFAULT_MODEL
+
+
+def test_tenant_config_malformed_is_ignored(tmpvault):
+    """A broken config must not crash construction — bad keys/values are skipped."""
+    from cogvault.core import DEFAULT_MODEL
+    _write(tmpvault, ".cogvault.toml", 'model = \ndim = "not-an-int"\nbogus_key = 5\n')
+    _write(tmpvault, "x.md", "malformed config resilience content.")
+    v = Vault(tmpvault)                     # must not raise
+    assert v.cfg.model == DEFAULT_MODEL     # unparseable model line ignored
+    assert v.cfg.dim == 384                 # bad int ignored, default kept
+
+
+def test_tenant_config_not_written_into_tenant(tmpvault):
+    """cogvault must never CREATE a config file — it only reads one if present."""
+    _write(tmpvault, "x.md", "cogvault never writes config content here.")
+    Vault(tmpvault).reindex()
+    assert not os.path.exists(os.path.join(tmpvault, ".cogvault.toml"))
+
+
 # ---- Obsidian / multi-source support (recursive + frontmatter + ignore) ------
 
 def test_strip_frontmatter_unit():

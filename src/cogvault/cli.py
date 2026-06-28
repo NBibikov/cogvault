@@ -13,6 +13,10 @@ def main(argv=None):
 
     def add_common(sp):
         sp.add_argument("--tenant", required=True, help="Tenant memory directory")
+        sp.add_argument("--model", default=None,
+                        help="Embedding model (overrides .cogvault.toml and "
+                             "$COGVAULT_MODEL). Must match the model the index was "
+                             "built with, or the index is fully re-embedded.")
         sp.add_argument("--half-life", type=float, default=0.0,
                         help="Temporal decay half-life in days (0=off)")
         sp.add_argument("--mmr", type=float, default=0.7, help="MMR lambda (1=relevance)")
@@ -58,10 +62,31 @@ def main(argv=None):
         print(f"cogvault: {files} files, {n} chunks indexed at {v.db_path}")
         return 0
 
-    cfg = Config(half_life_days=a.half_life, mmr_lambda=a.mmr,
-                 recursive=getattr(a, "recursive", False),
-                 strip_frontmatter=getattr(a, "strip_frontmatter", False),
-                 ignore_globs=tuple(getattr(a, "ignore", []) or ()))
+    # Resolve config in explicit precedence: CLI flags > $COGVAULT_MODEL > .cogvault.toml
+    # > defaults. We start from defaults, layer the tenant file (which is why we pass a
+    # Config to Vault — so Vault won't re-apply the file), then stamp explicit flags last.
+    from .core import apply_tenant_config
+    cfg = Config()
+    explicit: set[str] = set()
+    flag_map = {                                  # CLI flag → (Config field, argparse default)
+        "model": ("model", None), "half_life": ("half_life_days", 0.0),
+        "mmr": ("mmr_lambda", 0.7), "recursive": ("recursive", False),
+        "strip_frontmatter": ("strip_frontmatter", False),
+    }
+    for flag, (field, default) in flag_map.items():
+        if getattr(a, flag, default) != default:
+            explicit.add(field)
+    if getattr(a, "ignore", None):
+        explicit.add("ignore_globs")
+    # Layer the tenant file onto fields the operator did NOT set explicitly.
+    apply_tenant_config(cfg, a.tenant, respect_env=True, skip=explicit)
+    # Now stamp the explicit flags so they win over the file.
+    if getattr(a, "model", None):       cfg.model = a.model
+    if a.half_life != 0.0:              cfg.half_life_days = a.half_life
+    if a.mmr != 0.7:                    cfg.mmr_lambda = a.mmr
+    if getattr(a, "recursive", False): cfg.recursive = True
+    if getattr(a, "strip_frontmatter", False): cfg.strip_frontmatter = True
+    if getattr(a, "ignore", None):     cfg.ignore_globs = tuple(a.ignore)
     v = Vault(a.tenant, cfg)
 
     if a.cmd == "index":
