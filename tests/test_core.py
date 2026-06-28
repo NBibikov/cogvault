@@ -1,6 +1,6 @@
 import os, time, tempfile, shutil, threading
 import pytest
-from cogvault.core import Vault, Config, chunk_markdown
+from cogvault.core import Vault, Config, chunk_markdown, strip_frontmatter
 
 
 def _concurrent_writer(tenant, ident, q):
@@ -293,11 +293,11 @@ def test_model_switch_rebuild_is_atomic(tmpvault, monkeypatch):
     # Switch model → mismatch path. Make the re-embed blow up mid-rebuild.
     orig = core.Vault._index_file
     calls = {"n": 0}
-    def boom(self, con, fp, ev_re):
+    def boom(self, con, key, fp, ev_re):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("simulated kill mid-rebuild")
-        return orig(self, con, fp, ev_re)
+        return orig(self, con, key, fp, ev_re)
     monkeypatch.setattr(core.Vault, "_index_file", boom)
 
     v2 = Vault(tmpvault, Config(model="BAAI/bge-small-en-v1.5"))
@@ -316,3 +316,70 @@ def test_model_switch_rebuild_is_atomic(tmpvault, monkeypatch):
     assert n_chunks >= 1, "rollback left an empty chunks table (atomicity broken)"
     # And recall under the original model still works — index never went malformed.
     assert Vault(tmpvault, Config(model=m_old)).search("beta subsystem", k=1)
+
+
+# ---- Obsidian / multi-source support (recursive + frontmatter + ignore) ------
+
+def test_strip_frontmatter_unit():
+    assert strip_frontmatter("---\ntags: [a]\ncreated: 2026\n---\n\nbody here") == "\nbody here"
+    # no frontmatter → untouched
+    assert strip_frontmatter("# heading\n\nbody") == "# heading\n\nbody"
+    # a --- inside the body (not leading) is NOT treated as frontmatter
+    assert strip_frontmatter("intro\n\n---\n\nmore") == "intro\n\n---\n\nmore"
+
+
+def test_flat_tenant_ignores_subdirs_by_default(tmpvault):
+    """Default (non-recursive) must still see only top-level .md — no behavior change."""
+    _write(tmpvault, "top.md", "top level note about alpha widgets.")
+    sub = os.path.join(tmpvault, "nested"); os.makedirs(sub)
+    _write(sub, "deep.md", "deep nested note about beta gadgets.")
+    v = Vault(tmpvault); stats = v.reindex()
+    assert stats["files_total"] == 1                  # nested/deep.md NOT indexed
+    files = {r["file"] for r in v.search("beta gadgets", k=3)}
+    assert "deep.md" not in files and not any("nested" in f for f in files)
+
+
+def test_recursive_indexes_subdirs(tmpvault):
+    """recursive=True walks the tree (e.g. an Obsidian vault layout)."""
+    os.makedirs(os.path.join(tmpvault, "01-Projects", "X"))
+    os.makedirs(os.path.join(tmpvault, "02-Areas"))
+    _write(os.path.join(tmpvault, "01-Projects", "X"), "plan.md",
+           "Project X deployment plan: ship the alpha widget pipeline in Q3.")
+    _write(os.path.join(tmpvault, "02-Areas"), "health.md",
+           "Area note about beta gadget maintenance schedules.")
+    v = Vault(tmpvault, Config(recursive=True))
+    stats = v.reindex()
+    assert stats["files_total"] == 2
+    res = v.search("alpha widget deployment", k=1)
+    assert res and res[0]["file"] == os.path.join("01-Projects", "X", "plan.md")
+
+
+def test_recursive_same_basename_no_collision(tmpvault):
+    """Two notes named the same in different folders must both be indexed
+    (the relative-path key prevents the basename collision a flat key would cause)."""
+    a = os.path.join(tmpvault, "projA"); os.makedirs(a)
+    b = os.path.join(tmpvault, "projB"); os.makedirs(b)
+    _write(a, "Tasks.md", "ProjA tasks: migrate the alpha database to the new cluster.")
+    _write(b, "Tasks.md", "ProjB tasks: redesign the beta onboarding flow for users.")
+    v = Vault(tmpvault, Config(recursive=True))
+    stats = v.reindex()
+    assert stats["files_total"] == 2, "basename collision dropped a file"
+    files = {r["file"] for r in v.search("alpha database migration", k=3)}
+    assert os.path.join("projA", "Tasks.md") in files
+
+
+def test_recursive_strip_frontmatter_and_ignore(tmpvault):
+    """Frontmatter is stripped from embeddings; ignore_globs skip whole subtrees."""
+    os.makedirs(os.path.join(tmpvault, "notes"))
+    os.makedirs(os.path.join(tmpvault, "Templates"))
+    _write(os.path.join(tmpvault, "notes"), "n.md",
+           "---\ntags: [zzzcanary]\ncreated: 2026-01-01\n---\n\nThe gamma protocol resets the cache nightly.")
+    _write(os.path.join(tmpvault, "Templates"), "tmpl.md",
+           "{{title}} template scaffold gamma placeholder should be ignored.")
+    v = Vault(tmpvault, Config(recursive=True, strip_frontmatter=True,
+                               ignore_globs=("Templates/*",)))
+    stats = v.reindex()
+    assert stats["files_total"] == 1                  # Templates/ skipped
+    # frontmatter token 'zzzcanary' must NOT be retrievable (it was stripped)
+    res = v.search("gamma protocol cache", k=1)
+    assert res and "zzzcanary" not in res[0]["text"]

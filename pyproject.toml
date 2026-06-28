@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cogvault"
-version = "0.5.0"
+version = "0.6.0"
 description = "Fleet-grade local memory for AI agents over plain Markdown — hybrid search, multi-tenant, one process, no cloud, no Docker, no LLM."
 readme = "README.md"
 license = "MIT"

@@ -112,6 +112,30 @@ Exposes two tools:
 - `cogvault_recall` — natural-language hybrid search over this agent's memory
 - `cogvault_record` — save a fact; it's written as a Markdown card and indexed
 
+### Indexing a folder tree (Obsidian vaults, knowledge bases)
+
+By default a tenant is one flat directory of `.md` files. For a nested vault
+(e.g. Obsidian, with `01-Projects/…`, frontmatter, and folders to skip), opt in:
+
+```bash
+cogvault index --tenant ~/vault \
+  --recursive \
+  --strip-frontmatter \
+  --ignore ".obsidian/*" --ignore ".trash/*" --ignore "Templates/*"
+```
+
+- `--recursive` walks subdirectories; files keep their path relative to the tenant,
+  so two notes named `Tasks.md` in different folders never collide.
+- `--strip-frontmatter` drops a leading YAML `--- … ---` block so its keys don't
+  pollute the embedding.
+- `--ignore GLOB` (repeatable) skips paths relative to the tenant root.
+
+Same flags exist on `search` and `mcp`, and as `Config(recursive=True,
+strip_frontmatter=True, ignore_globs=(...))` for the library. Indexing is
+incremental: the first pass embeds everything, later passes only re-embed changed
+files. (Reference: a ~3,500-note vault → ~9,500 chunks, first index ≈ 3–4 min,
+then warm recall in single-digit milliseconds.)
+
 ### As a library
 
 ```python

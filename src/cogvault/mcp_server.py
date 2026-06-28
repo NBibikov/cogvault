@@ -52,7 +52,7 @@ class MCPServer:
         if m == "initialize":
             return self._ok(rid, {"protocolVersion": PROTOCOL,
                                   "capabilities": {"tools": {}},
-                                  "serverInfo": {"name": "cogvault", "version": "0.5.0"}})
+                                  "serverInfo": {"name": "cogvault", "version": "0.6.0"}})
         if m == "notifications/initialized":
             return None
         if m == "tools/list":

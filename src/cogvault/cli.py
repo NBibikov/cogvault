@@ -16,6 +16,14 @@ def main(argv=None):
         sp.add_argument("--half-life", type=float, default=0.0,
                         help="Temporal decay half-life in days (0=off)")
         sp.add_argument("--mmr", type=float, default=0.7, help="MMR lambda (1=relevance)")
+        # source options — for vaults with a folder tree (e.g. Obsidian)
+        sp.add_argument("--recursive", action="store_true",
+                        help="Walk subdirectories (e.g. an Obsidian vault)")
+        sp.add_argument("--strip-frontmatter", action="store_true",
+                        help="Drop a leading YAML frontmatter block before indexing")
+        sp.add_argument("--ignore", action="append", default=[], metavar="GLOB",
+                        help="Path glob to skip, relative to tenant (repeatable), "
+                             'e.g. --ignore ".obsidian/*" --ignore "Templates/*"')
 
     ix = sub.add_parser("index", help="(Re)build the index from markdown files")
     add_common(ix)
@@ -50,7 +58,10 @@ def main(argv=None):
         print(f"cogvault: {files} files, {n} chunks indexed at {v.db_path}")
         return 0
 
-    cfg = Config(half_life_days=a.half_life, mmr_lambda=a.mmr)
+    cfg = Config(half_life_days=a.half_life, mmr_lambda=a.mmr,
+                 recursive=getattr(a, "recursive", False),
+                 strip_frontmatter=getattr(a, "strip_frontmatter", False),
+                 ignore_globs=tuple(getattr(a, "ignore", []) or ()))
     v = Vault(a.tenant, cfg)
 
     if a.cmd == "index":

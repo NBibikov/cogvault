@@ -44,6 +44,10 @@ class Config:
     snippet_chars: int = 0           # 0 = return full chunk (agents have big context)
     db_dir: str = ""                 # "" = ~/.cache/cogvault; set to a dir to override
     evergreen_re: str = r"^(MEMORY|INDEX|.*reference_|.*architecture).*"
+    # ---- source options (opt-in; flat agent-memory tenants keep the defaults) ----
+    recursive: bool = False          # True = walk subdirectories (e.g. an Obsidian vault)
+    strip_frontmatter: bool = False  # True = drop a leading YAML --- … --- block before chunking
+    ignore_globs: tuple[str, ...] = ()  # path globs to skip (e.g. ".obsidian/*", "Templates/*")
 
 
 # ---- one shared embedder per process ---------------------------------------
@@ -65,6 +69,15 @@ def _sha(s: str) -> str:
 
 def _pack(v) -> bytes:
     return struct.pack(f"{len(v)}f", *v)
+
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
+
+def strip_frontmatter(text: str) -> str:
+    """Drop a single leading YAML frontmatter block (--- … ---). Obsidian notes
+    carry tags/created/etc. as frontmatter; embedding that YAML as prose pollutes
+    recall. Only a block at the very start of the file is removed."""
+    return _FRONTMATTER_RE.sub("", text, count=1)
+
 
 def chunk_markdown(text: str, chunk_chars: int) -> list[str]:
     """Split on blank lines, then pack paragraphs up to chunk_chars."""
@@ -173,6 +186,31 @@ class Vault:
         return (prev.get("model") != self.cfg.model
                 or prev.get("dim") != str(self.cfg.dim))
 
+    def _iter_files(self):
+        """Yield (key, fullpath) for every .md to index. key is the file's path
+        RELATIVE to the tenant dir when recursive (so notes with the same basename
+        in different folders don't collide), else the basename (flat, legacy).
+        ignore_globs are matched against the relative path."""
+        import fnmatch
+        if self.cfg.recursive:
+            for root, dirs, names in os.walk(self.dir):
+                # prune ignored / hidden dirs in-place so os.walk doesn't descend them
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for nm in names:
+                    if not nm.endswith(".md"):
+                        continue
+                    fp = os.path.join(root, nm)
+                    rel = os.path.relpath(fp, self.dir)
+                    if any(fnmatch.fnmatch(rel, g) for g in self.cfg.ignore_globs):
+                        continue
+                    yield rel, fp
+        else:
+            for fp in glob.glob(os.path.join(self.dir, "*.md")):
+                base = os.path.basename(fp)
+                if any(fnmatch.fnmatch(base, g) for g in self.cfg.ignore_globs):
+                    continue
+                yield base, fp
+
     def _purge_file(self, con, base: str):
         """Remove all derived rows for one file (chunks, fts, vec)."""
         ids = [r[0] for r in con.execute("SELECT id FROM chunks WHERE path=?", (base,))]
@@ -182,18 +220,19 @@ class Vault:
             con.execute("DELETE FROM vec_chunks WHERE chunk_id=?", (cid,))
         con.execute("DELETE FROM chunks WHERE path=?", (base,))
 
-    def _index_file(self, con, fp: str, ev_re) -> tuple[int, int, int]:
-        base = os.path.basename(fp)
-        evergreen = 1 if ev_re.match(base) else 0
+    def _index_file(self, con, key: str, fp: str, ev_re) -> tuple[int, int, int]:
+        evergreen = 1 if ev_re.match(os.path.basename(key)) else 0
         age = _file_age_days(fp)
         text = open(fp, encoding="utf-8", errors="ignore").read()
+        if self.cfg.strip_frontmatter:
+            text = strip_frontmatter(text)
         n_chunks = n_new = n_cache = 0
         for ch in chunk_markdown(text, self.cfg.chunk_chars):
             h = _sha(ch)
-            stable = _sha(f"{base}\0{h}")          # deterministic, reindex-stable id
+            stable = _sha(f"{key}\0{h}")           # deterministic, reindex-stable id
             cur = con.execute(
                 "INSERT OR IGNORE INTO chunks(cid,path,hash,text,age_days,evergreen) "
-                "VALUES(?,?,?,?,?,?)", (stable, base, h, ch, age, evergreen))
+                "VALUES(?,?,?,?,?,?)", (stable, key, h, ch, age, evergreen))
             if cur.rowcount == 0:      # exact (path,hash) already present this pass
                 continue
             rid = cur.lastrowid; n_chunks += 1
@@ -233,8 +272,7 @@ class Vault:
                 for kv in {"model": self.cfg.model, "dim": str(self.cfg.dim),
                            "schema": str(SCHEMA_VERSION)}.items():
                     con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", kv)
-            disk = {os.path.basename(p): (p, os.path.getmtime(p))
-                    for p in glob.glob(os.path.join(self.dir, "*.md"))}
+            disk = {key: (fp, os.path.getmtime(fp)) for key, fp in self._iter_files()}
             known = {r[0]: r[1] for r in con.execute("SELECT path, mtime FROM files")}
             if full:
                 for b in list(known):
@@ -242,17 +280,17 @@ class Vault:
                 con.execute("DELETE FROM files")
                 known = {}
             n_chunks = n_new = n_cache = n_files = 0
-            for base, (fp, mt) in disk.items():
-                if known.get(base) == mt:
+            for key, (fp, mt) in disk.items():
+                if known.get(key) == mt:
                     continue                          # unchanged — skip entirely
-                self._purge_file(con, base)           # stale rows out (no-op if new)
-                c, nw, cc = self._index_file(con, fp, ev_re)
-                con.execute("INSERT OR REPLACE INTO files(path,mtime) VALUES(?,?)", (base, mt))
+                self._purge_file(con, key)            # stale rows out (no-op if new)
+                c, nw, cc = self._index_file(con, key, fp, ev_re)
+                con.execute("INSERT OR REPLACE INTO files(path,mtime) VALUES(?,?)", (key, mt))
                 n_chunks += c; n_new += nw; n_cache += cc; n_files += 1
-            for base in list(known):                  # files gone from disk
-                if base not in disk:
-                    self._purge_file(con, base)
-                    con.execute("DELETE FROM files WHERE path=?", (base,))
+            for key in list(known):                   # files gone from disk
+                if key not in disk:
+                    self._purge_file(con, key)
+                    con.execute("DELETE FROM files WHERE path=?", (key,))
             con.execute("COMMIT")
         except Exception:
             con.execute("ROLLBACK")
