@@ -8,6 +8,14 @@ beyond the query text the agent already sees. Used by `cogvault analyze`.
 from __future__ import annotations
 import os, json, time
 
+
+def tenant_label(tenant: str) -> str:
+    """Human-readable tenant label for the log: last two path components.
+    A bare basename is useless fleet-wide — every agent's tenant is
+    `~/Agents/<name>/memory`, so they'd all collapse into "memory"."""
+    parts = tenant.rstrip("/").split(os.sep)
+    return "/".join(p for p in parts[-2:] if p) or tenant
+
 def _log_path() -> str | None:
     v = os.environ.get("COGVAULT_LOG")
     if v in ("off", "0", "false"):
@@ -30,7 +38,7 @@ def log_recall(tenant: str, query: str, results: list, latency_ms: float,
         rec = {
             "ts": round(ts if ts is not None else time.time(), 3),
             "event": "recall",
-            "tenant": os.path.basename(tenant.rstrip("/")),
+            "tenant": tenant_label(tenant),
             "query": query,
             "n_results": len(results),
             "top_score": top["score"] if top else None,

@@ -293,11 +293,11 @@ def test_model_switch_rebuild_is_atomic(tmpvault, monkeypatch):
     # Switch model → mismatch path. Make the re-embed blow up mid-rebuild.
     orig = core.Vault._index_file
     calls = {"n": 0}
-    def boom(self, con, key, fp, ev_re):
+    def boom(self, con, key, fp, ev_re, prepared=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("simulated kill mid-rebuild")
-        return orig(self, con, key, fp, ev_re)
+        return orig(self, con, key, fp, ev_re, prepared)
     monkeypatch.setattr(core.Vault, "_index_file", boom)
 
     v2 = Vault(tmpvault, Config(model="BAAI/bge-small-en-v1.5"))
@@ -453,3 +453,54 @@ def test_recursive_strip_frontmatter_and_ignore(tmpvault):
     # frontmatter token 'zzzcanary' must NOT be retrievable (it was stripped)
     res = v.search("gamma protocol cache", k=1)
     assert res and "zzzcanary" not in res[0]["text"]
+
+# ---- 0.7.1 regression tests ---------------------------------------------------
+
+def test_embedder_is_per_model():
+    """One process touching tenants pinned to different models must get different
+    embedders — a single global here poisoned emb_cache with wrong-model vectors."""
+    from cogvault.core import _embedder
+    a = _embedder("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    b = _embedder("BAAI/bge-small-en-v1.5")
+    assert a is not b
+    assert a is _embedder("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+
+
+def test_model_switch_purges_fts_postings(tmpvault):
+    """The mismatch wipe must clear the FTS5 inverted index BEFORE the content
+    table: wiping chunks first left stale term→rowid postings that misattributed
+    old terms to whatever new chunk reused the rowid."""
+    import sqlite3
+    _write(tmpvault, "old.md", "the zebraword sanctuary migration notes.")
+    Vault(tmpvault, Config(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")).reindex()
+    os.remove(os.path.join(tmpvault, "old.md"))
+    _write(tmpvault, "new.md", "completely unrelated gadget assembly instructions.")
+    v2 = Vault(tmpvault, Config(model="BAAI/bge-small-en-v1.5"))
+    v2.reindex()   # mismatch → full wipe + rebuild
+    con = sqlite3.connect(v2.db_path)
+    try:
+        rows = con.execute(
+            "SELECT rowid FROM fts_chunks WHERE fts_chunks MATCH 'zebraword'").fetchall()
+    finally:
+        con.close()
+    assert rows == [], "stale FTS postings survived the mismatch wipe"
+
+
+def test_full_reindex_purges_orphaned_chunks(tmpvault):
+    """reindex(full=True) must clear ALL derived rows, not only paths present in
+    the `files` table — orphans (older-version leftovers) must not survive the
+    rebuild that _heal_async relies on."""
+    import sqlite3
+    _write(tmpvault, "x.md", "legit content about delta pipelines.")
+    v = Vault(tmpvault, Config(model="BAAI/bge-small-en-v1.5"))
+    v.reindex()
+    con = sqlite3.connect(v.db_path)
+    con.execute("INSERT INTO chunks(cid,path,hash,text) VALUES('orph','ghost.md','h','orphan text')")
+    con.commit(); con.close()
+    v.reindex(full=True)
+    con = sqlite3.connect(v.db_path)
+    try:
+        ghosts = con.execute("SELECT count(*) FROM chunks WHERE path='ghost.md'").fetchone()[0]
+    finally:
+        con.close()
+    assert ghosts == 0, "orphaned chunk survived a full rebuild"

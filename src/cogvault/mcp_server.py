@@ -7,17 +7,29 @@ Tools: cogvault_recall (hybrid search), cogvault_record (append a markdown card)
 from __future__ import annotations
 import sys, json, os, datetime
 from .core import Vault, Config
+from . import __version__
 
 PROTOCOL = "2024-11-05"
 
 
 def _write_card(tenant_dir: str, content: str, title: str | None = None) -> str:
-    """Append a memory as a real markdown file (source of truth)."""
+    """Append a memory as a real markdown file (source of truth). Cards carry
+    the same name/description frontmatter as hand-written ones, and filenames
+    never overwrite: same-second records get a numeric suffix."""
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     slug = (title or content[:40]).lower()
     slug = "".join(c if c.isalnum() else "-" for c in slug).strip("-")[:50] or "card"
     fp = os.path.join(tenant_dir, f"card-{ts}-{slug}.md")
-    body = f"# {title}\n\n{content}\n" if title else content + "\n"
+    n = 2
+    while os.path.exists(fp):
+        fp = os.path.join(tenant_dir, f"card-{ts}-{slug}-{n}.md")
+        n += 1
+    name = " ".join((title or slug.replace("-", " ")).split())
+    desc = " ".join(content.split())[:150]
+    # json.dumps → safely quoted YAML scalars (titles may contain quotes/colons)
+    body = (f"---\nname: {json.dumps(name, ensure_ascii=False)}\n"
+            f"description: {json.dumps(desc, ensure_ascii=False)}\n"
+            f"---\n\n{content}\n")
     with open(fp, "w", encoding="utf-8") as f:
         f.write(body)
     return fp
@@ -52,9 +64,11 @@ class MCPServer:
         if m == "initialize":
             return self._ok(rid, {"protocolVersion": PROTOCOL,
                                   "capabilities": {"tools": {}},
-                                  "serverInfo": {"name": "cogvault", "version": "0.6.0"}})
-        if m == "notifications/initialized":
-            return None
+                                  "serverInfo": {"name": "cogvault", "version": __version__}})
+        if m == "ping":
+            return self._ok(rid, {})
+        if isinstance(m, str) and m.startswith("notifications/"):
+            return None               # JSON-RPC: never respond to notifications
         if m == "tools/list":
             return self._ok(rid, {"tools": [
                 {"name": n, **spec} for n, spec in self.tools.items()]})
@@ -78,6 +92,8 @@ class MCPServer:
                 return self._err(rid, -32601, f"unknown tool {name}")
             except Exception as e:
                 return self._err(rid, -32000, str(e))
+        if rid is None:
+            return None               # unknown id-less message = notification: stay silent
         return self._err(rid, -32601, f"unknown method {m}")
 
     @staticmethod

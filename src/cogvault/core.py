@@ -10,7 +10,7 @@ Pipeline:  files -> markdown-aware chunks -> content-hash dedup/cache ->
            temporal decay -> MMR diversity.
 """
 from __future__ import annotations
-import os, re, struct, hashlib, sqlite3, glob, math, time, threading
+import os, re, sys, struct, hashlib, sqlite3, glob, math, time, threading
 from dataclasses import dataclass, field
 
 import sqlite_vec
@@ -55,9 +55,22 @@ def _parse_toml_minimal(text: str) -> dict:
     value is a quoted string, int, float, bool, or a simple inline array of strings.
     Good enough for `model = "..."`; complex TOML should use a 3.11+ runtime.
     """
+    def _strip_comment(raw: str) -> str:
+        # drop a trailing # comment, but not a # inside a quoted value
+        q = None
+        for i, c in enumerate(raw):
+            if q:
+                if c == q:
+                    q = None
+            elif c in "\"'":
+                q = c
+            elif c == "#":
+                return raw[:i]
+        return raw
+
     out: dict = {}
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
+        line = _strip_comment(raw).strip()
         if not line or "=" not in line or line.startswith("["):
             continue
         key, _, val = line.partition("=")
@@ -87,6 +100,9 @@ def _load_tenant_config(tenant_dir: str) -> dict:
 
     Returns {} if the file is absent or unreadable. Unknown keys are ignored;
     known keys are coerced to their declared type (bad values are skipped, not fatal).
+    A present-but-unusable file is LOUD: silently ignoring it means the model pin
+    silently falls back to DEFAULT_MODEL, whose mismatch wipe re-embeds the whole
+    index — the exact footgun this file exists to prevent.
     """
     path = os.path.join(tenant_dir, TENANT_CONFIG_NAME)
     if not os.path.exists(path):
@@ -99,7 +115,10 @@ def _load_tenant_config(tenant_dir: str) -> dict:
             data = tomllib.loads(raw.decode("utf-8"))
         except ModuleNotFoundError:
             data = _parse_toml_minimal(raw.decode("utf-8"))
-    except Exception:
+    except Exception as e:
+        print(f"cogvault: WARNING — cannot parse {path} ({e}); tenant config IGNORED. "
+              f"Settings fall back to env/defaults, which can trigger a full re-embed.",
+              file=sys.stderr)
         return {}
     out: dict = {}
     for key, typ in _TENANT_CONFIG_KEYS.items():
@@ -109,7 +128,13 @@ def _load_tenant_config(tenant_dir: str) -> dict:
         try:
             out[key] = tuple(v) if typ is tuple else typ(v)
         except (TypeError, ValueError):
+            print(f"cogvault: WARNING — {path}: bad value for '{key}' ignored.",
+                  file=sys.stderr)
             continue                  # malformed value → ignore that key, keep going
+    if not out:
+        print(f"cogvault: WARNING — {path} exists but yields no usable settings; "
+              f"check for a mangled file (e.g. lost newlines turning it into one comment).",
+              file=sys.stderr)
     return out
 
 
@@ -155,14 +180,23 @@ class Config:
     ignore_globs: tuple[str, ...] = ()  # path globs to skip (e.g. ".obsidian/*", "Templates/*")
 
 
-# ---- one shared embedder per process ---------------------------------------
-_EMBEDDER = None
+# ---- one shared embedder per (process, model) -------------------------------
+# Keyed by model name: a single process may touch tenants pinned to different
+# models (fleet reindex loops, tests). A single global here silently embedded
+# tenant #2 with tenant #1's model AND persisted those vectors into emb_cache
+# under the wrong model name — permanent silent recall degradation.
+_EMBEDDERS: dict = {}
+_EMBEDDERS_LOCK = threading.Lock()
 def _embedder(model: str):
-    global _EMBEDDER
-    if _EMBEDDER is None:
-        from fastembed import TextEmbedding
-        _EMBEDDER = TextEmbedding(model_name=model)
-    return _EMBEDDER
+    emb = _EMBEDDERS.get(model)
+    if emb is None:
+        with _EMBEDDERS_LOCK:
+            emb = _EMBEDDERS.get(model)
+            if emb is None:
+                from fastembed import TextEmbedding
+                emb = TextEmbedding(model_name=model)
+                _EMBEDDERS[model] = emb
+    return emb
 
 def embed(texts: list[str], model: str = DEFAULT_MODEL) -> list[list[float]]:
     return [list(v) for v in _embedder(model).embed(texts)]
@@ -185,10 +219,20 @@ def strip_frontmatter(text: str) -> str:
 
 
 def chunk_markdown(text: str, chunk_chars: int) -> list[str]:
-    """Split on blank lines, then pack paragraphs up to chunk_chars."""
+    """Split on blank lines, then pack paragraphs up to chunk_chars.
+    A single paragraph longer than chunk_chars is hard-split: the embedding
+    model truncates at its token limit, so an oversized chunk's tail would be
+    invisible to the vector channel."""
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks, cur = [], ""
     for p in paras:
+        while len(p) > chunk_chars:
+            if cur:
+                chunks.append(cur); cur = ""
+            chunks.append(p[:chunk_chars].strip())
+            p = p[chunk_chars:].strip()
+        if not p:
+            continue
         if len(cur) + len(p) < chunk_chars:
             cur = (cur + "\n\n" + p).strip()
         else:
@@ -225,13 +269,23 @@ def _fts_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
+# one heal thread per index db, process-wide (see Vault._heal_async)
+_HEALS: dict = {}
+_HEALS_LOCK = threading.Lock()
+
+
 # ---- the store --------------------------------------------------------------
 class Vault:
     """One Vault == one tenant directory of Markdown files."""
 
     def __init__(self, tenant_dir: str, config: Config | None = None):
-        self.dir = os.path.abspath(os.path.expanduser(tenant_dir))
+        # realpath: symlinked and resolved spellings of the same tenant must map
+        # to the SAME index db, or the two copies flap against each other.
+        self.dir = os.path.realpath(os.path.expanduser(tenant_dir))
         self.cfg = config or Config()
+        if not os.path.isdir(self.dir):
+            print(f"cogvault: creating new tenant dir {self.dir} "
+                  f"(typo'd --tenant paths create empty junk tenants).", file=sys.stderr)
         os.makedirs(self.dir, exist_ok=True)
         # Per-tenant `.cogvault.toml` overrides, applied only when the caller did NOT
         # pass an explicit Config. Precedence in this (library) path:
@@ -245,7 +299,11 @@ class Vault:
         # Filename is derived from the tenant path so tenants never collide.
         db_dir = os.path.expanduser(self.cfg.db_dir) if self.cfg.db_dir else DEFAULT_DB_DIR
         os.makedirs(db_dir, exist_ok=True)
-        tag = hashlib.sha256(self.dir.encode()).hexdigest()[:16]
+        # On case-insensitive filesystems (macOS/Windows default) two case-variant
+        # spellings are the SAME directory — casefold before hashing so they share
+        # one index instead of maintaining two diverging ones.
+        key = self.dir.casefold() if sys.platform in ("darwin", "win32") else self.dir
+        tag = hashlib.sha256(key.encode()).hexdigest()[:16]
         name = os.path.basename(self.dir) or "root"
         self.db_path = os.path.join(db_dir, f"{name}-{tag}.db")
 
@@ -258,6 +316,13 @@ class Vault:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA busy_timeout=30000")
         con.execute("PRAGMA synchronous=NORMAL")
+        # Schema creation + user_version stamp happen ONLY when the db is new.
+        # Doing either on every connect (a) takes a write lock on the pure READ
+        # path, so searches stall behind a long reindex, and (b) overwrites the
+        # old user_version before any future migration could read it.
+        if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks'"
+                       ).fetchone():
+            return con
         con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")  # for future migrations
         con.executescript(f"""
             CREATE TABLE IF NOT EXISTS chunks(
@@ -333,15 +398,33 @@ class Vault:
             con.execute("DELETE FROM vec_chunks WHERE chunk_id=?", (cid,))
         con.execute("DELETE FROM chunks WHERE path=?", (base,))
 
-    def _index_file(self, con, key: str, fp: str, ev_re) -> tuple[int, int, int]:
-        evergreen = 1 if ev_re.match(os.path.basename(key)) else 0
-        age = _file_age_days(fp)
+    def _prepare_file(self, con, fp: str) -> list[tuple[str, str, bytes, bool]]:
+        """Chunk a file and resolve each chunk's vector (emb_cache hit or fresh
+        embed) → [(chunk, hash, blob, from_cache)]. Read-only: called OUTSIDE the
+        write transaction, so embedding (the slow part) never holds the write lock
+        and concurrent searches aren't starved during a big reindex."""
         text = open(fp, encoding="utf-8", errors="ignore").read()
         if self.cfg.strip_frontmatter:
             text = strip_frontmatter(text)
-        n_chunks = n_new = n_cache = 0
+        out = []
         for ch in chunk_markdown(text, self.cfg.chunk_chars):
             h = _sha(ch)
+            cached = con.execute(
+                "SELECT vec FROM emb_cache WHERE hash=? AND model=?", (h, self.cfg.model)).fetchone()
+            if cached:
+                out.append((ch, h, cached[0], True))
+            else:
+                out.append((ch, h, _pack(embed([ch], self.cfg.model)[0]), False))
+        return out
+
+    def _index_file(self, con, key: str, fp: str, ev_re,
+                    prepared: list | None = None) -> tuple[int, int, int]:
+        evergreen = 1 if ev_re.match(os.path.basename(key)) else 0
+        age = _file_age_days(fp)
+        if prepared is None:           # race fallback: file entered scope inside the txn
+            prepared = self._prepare_file(con, fp)
+        n_chunks = n_new = n_cache = 0
+        for ch, h, blob, from_cache in prepared:
             stable = _sha(f"{key}\0{h}")           # deterministic, reindex-stable id
             cur = con.execute(
                 "INSERT OR IGNORE INTO chunks(cid,path,hash,text,age_days,evergreen) "
@@ -350,12 +433,10 @@ class Vault:
                 continue
             rid = cur.lastrowid; n_chunks += 1
             con.execute("INSERT INTO fts_chunks(rowid,text) VALUES(?,?)", (rid, ch))
-            cached = con.execute(
-                "SELECT vec FROM emb_cache WHERE hash=? AND model=?", (h, self.cfg.model)).fetchone()
-            if cached:
-                blob = cached[0]; n_cache += 1
+            if from_cache:
+                n_cache += 1
             else:
-                blob = _pack(embed([ch], self.cfg.model)[0]); n_new += 1
+                n_new += 1
                 con.execute("INSERT OR REPLACE INTO emb_cache(hash,model,vec) VALUES(?,?,?)",
                             (h, self.cfg.model, blob))
             con.execute("INSERT INTO vec_chunks(chunk_id,embedding) VALUES(?,?)", (rid, blob))
@@ -365,39 +446,63 @@ class Vault:
     def reindex(self, full: bool = False) -> dict:
         con = self._connect()
         ev_re = re.compile(self.cfg.evergreen_re, re.IGNORECASE)
-        # BEGIN IMMEDIATE grabs the write lock up front, so two processes
-        # reindexing the same tenant serialize (the loser waits out busy_timeout)
-        # instead of racing into a vec_chunks rowid collision.
         con.isolation_level = None
-        con.execute("BEGIN IMMEDIATE")
         try:
-            # Model/dim mismatch wipe happens INSIDE this atomic txn (not in
-            # _connect): if the process dies mid-rebuild, SQLite rolls back to the
-            # previous model's index — no half-wiped tables, no malformed vec0.
-            # Forces a full rebuild so every chunk is re-embedded under the new model.
+            # ---- read phase (no write lock) ----------------------------------
+            # Decide scope and compute every needed embedding BEFORE taking the
+            # write lock: embedding is the slow part, and doing it inside the txn
+            # starved concurrent searches for the whole rebuild.
             if self._model_mismatch(con):
+                prev = {k: v for k, v in con.execute("SELECT key,value FROM meta")}
+                print(f"cogvault: model/dim mismatch on {self.dir} "
+                      f"(index: {prev.get('model')}/{prev.get('dim')} → "
+                      f"config: {self.cfg.model}/{self.cfg.dim}) — FULL re-embed. "
+                      f"If unintended, check .cogvault.toml / $COGVAULT_MODEL.",
+                      file=sys.stderr)
                 full = True
-                # NB: use execute() not executescript() — executescript issues an
-                # implicit COMMIT first, which would break the surrounding
-                # BEGIN IMMEDIATE and defeat the whole atomicity fix.
-                for tbl in ("chunks", "files", "emb_cache", "vec_chunks", "fts_chunks"):
+            disk = {key: (fp, os.path.getmtime(fp)) for key, fp in self._iter_files()}
+            known = {r[0]: r[1] for r in con.execute("SELECT path, mtime FROM files")}
+            prepared = {key: self._prepare_file(con, fp)
+                        for key, (fp, mt) in disk.items()
+                        if full or known.get(key) != mt}
+            # ---- write phase -------------------------------------------------
+            # BEGIN IMMEDIATE grabs the write lock up front, so two processes
+            # reindexing the same tenant serialize (the loser waits out
+            # busy_timeout) instead of racing into a vec_chunks rowid collision.
+            # The mismatch wipe stays INSIDE this atomic txn: if the process dies
+            # mid-rebuild, SQLite rolls back to the previous model's index — no
+            # half-wiped tables, no malformed vec0.
+            con.execute("BEGIN IMMEDIATE")
+            if self._model_mismatch(con):   # re-check under the lock (lost race)
+                full = True
+            if full:
+                # Truly-full wipe of ALL derived rows — not just paths listed in
+                # `files` — so orphans from older versions can't survive the
+                # rebuild. Order matters: fts_chunks is an external-content FTS5
+                # table; its 'delete-all' must run BEFORE chunks is cleared
+                # (deleting chunks first leaves stale term postings that
+                # misattribute to reused rowids). emb_cache is spared: it is
+                # keyed (hash, model), so other models' entries remain valid and
+                # switching back is cheap.
+                # NB: execute() not executescript() — executescript issues an
+                # implicit COMMIT first, which would break BEGIN IMMEDIATE.
+                con.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('delete-all')")
+                for tbl in ("chunks", "vec_chunks", "files"):
                     con.execute(f"DELETE FROM {tbl}")
                 for kv in {"model": self.cfg.model, "dim": str(self.cfg.dim),
                            "schema": str(SCHEMA_VERSION)}.items():
                     con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", kv)
-            disk = {key: (fp, os.path.getmtime(fp)) for key, fp in self._iter_files()}
-            known = {r[0]: r[1] for r in con.execute("SELECT path, mtime FROM files")}
-            if full:
-                for b in list(known):
-                    self._purge_file(con, b)
-                con.execute("DELETE FROM files")
                 known = {}
+            else:
+                # re-read under the lock: another process may have indexed files
+                # between the phases; trust the locked view
+                known = {r[0]: r[1] for r in con.execute("SELECT path, mtime FROM files")}
             n_chunks = n_new = n_cache = n_files = 0
             for key, (fp, mt) in disk.items():
                 if known.get(key) == mt:
                     continue                          # unchanged — skip entirely
                 self._purge_file(con, key)            # stale rows out (no-op if new)
-                c, nw, cc = self._index_file(con, key, fp, ev_re)
+                c, nw, cc = self._index_file(con, key, fp, ev_re, prepared.get(key))
                 con.execute("INSERT OR REPLACE INTO files(path,mtime) VALUES(?,?)", (key, mt))
                 n_chunks += c; n_new += nw; n_cache += cc; n_files += 1
             for key in list(known):                   # files gone from disk
@@ -406,7 +511,8 @@ class Vault:
                     con.execute("DELETE FROM files WHERE path=?", (key,))
             con.execute("COMMIT")
         except Exception:
-            con.execute("ROLLBACK")
+            if con.in_transaction:
+                con.execute("ROLLBACK")
             raise
         finally:
             con.close()
@@ -431,20 +537,47 @@ class Vault:
         return out
 
     def _heal_async(self) -> None:
-        """Fire-and-forget background rebuild of a degraded index. Best-effort:
-        a single daemon thread does a full reindex; a concurrent reindexer just
-        serializes on the write lock (busy_timeout). Errors are swallowed —
-        healing must never raise into the read-path."""
+        """Fire-and-forget background rebuild of a degraded index. Single-flight
+        per db (process-wide): without the guard, every failed search under load
+        spawned another full re-embed — a thundering herd serialized on the write
+        lock. Errors are swallowed — healing must never raise into the read-path.
+        NB: the thread is a daemon; a short-lived CLI process exits before it
+        finishes — call join_heal() to wait for the rebuild."""
         def _run():
             try:
                 self.reindex(full=True)
             except Exception:
                 pass
-        threading.Thread(target=_run, daemon=True).start()
+        with _HEALS_LOCK:
+            t = _HEALS.get(self.db_path)
+            if t is None or not t.is_alive():
+                t = threading.Thread(target=_run, daemon=True)
+                _HEALS[self.db_path] = t
+                t.start()
+            self._heal_thread = t
+
+    def join_heal(self, timeout: float | None = None) -> bool:
+        """Wait for a heal triggered by a failed search on THIS vault. Returns
+        True if a heal ran and finished (worth retrying the search)."""
+        t = getattr(self, "_heal_thread", None)
+        if t is None:
+            return False
+        t.join(timeout)
+        return not t.is_alive()
 
     def _search(self, query: str, k: int = 5) -> list[dict]:
         con = self._connect()
         try:
+            # Same-dim model drift gives silent garbage vector ranking (no error
+            # is possible — the dims match). Warn once per Vault so config drift
+            # is visible instead of quietly degrading recall.
+            if not getattr(self, "_warned_mismatch", False) and self._model_mismatch(con):
+                self._warned_mismatch = True
+                print(f"cogvault: WARNING — searching {self.dir} with model "
+                      f"{self.cfg.model!r} but the index was built with a different "
+                      f"model; vector ranking is unreliable. Run `cogvault index` "
+                      f"to rebuild (or fix .cogvault.toml/$COGVAULT_MODEL).",
+                      file=sys.stderr)
             qv = _pack(embed([query], self.cfg.model)[0])
             vec_rows = con.execute(
                 "SELECT chunk_id FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?",

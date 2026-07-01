@@ -93,6 +93,11 @@ def main(argv=None):
         print(json.dumps(v.reindex()))
     elif a.cmd == "search":
         res = v.search(a.query, k=a.k)
+        if not res and v.join_heal(timeout=600):
+            # a corrupt index triggered a background rebuild — in a short-lived
+            # CLI process the daemon thread would die at exit, leaving the index
+            # broken and every future CLI call empty. Wait it out and retry once.
+            res = v.search(a.query, k=a.k)
         if a.json:
             print(json.dumps(res, indent=2))
         else:
@@ -114,7 +119,11 @@ def _analyze(a) -> int:
               f"{path or 'disabled'}).")
         return 0
     rows = []
-    tfilter = os.path.basename(a.tenant.rstrip("/")) if a.tenant else None
+    tfilter = None
+    if a.tenant:
+        from .obs import tenant_label
+        # match both the current parent/basename label and the legacy bare basename
+        tfilter = {tenant_label(a.tenant), os.path.basename(a.tenant.rstrip("/"))}
     with open(path, encoding="utf-8") as f:
         for line in f:
             try:
@@ -123,7 +132,7 @@ def _analyze(a) -> int:
                 continue
             if d.get("event") != "recall":
                 continue
-            if tfilter and d.get("tenant") != tfilter:
+            if tfilter and d.get("tenant") not in tfilter:
                 continue
             rows.append(d)
     if not rows:
