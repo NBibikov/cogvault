@@ -424,11 +424,15 @@ class Vault:
     def _migrate(self, con) -> None:
         """In-place schema upgrade v1 → v2 (type column + links table). Cheap by
         design: chunk text is unchanged, so every embedding stays valid in
-        emb_cache — no re-embed. Clearing `files` forces the next reindex() to
-        re-run every file through _index_file (cache hits only), which backfills
-        the new `type` column and `links` rows. Until that reindex runs, types
-        are NULL (a `type` filter matches nothing) — the MCP server reindexes on
-        boot, and CLI users run `cogvault index` after upgrading anyway."""
+        emb_cache — no re-embed. Invalidating every mtime in `files` forces the
+        next reindex() to re-run every file through _index_file (cache hits
+        only), which backfills the new `type` column and `links` rows. The keys
+        MUST survive (UPDATE, not DELETE): reindex detects deletions by "key in
+        `files` but not on disk", so clearing the table would orphan the chunks
+        of any file deleted between the last v1 index and the backfill — they'd
+        keep matching searches forever. Until the backfill runs, types are NULL
+        (a `type` filter matches nothing) — the MCP server reindexes on boot,
+        and CLI users run `cogvault index` after upgrading anyway."""
         con.execute("BEGIN IMMEDIATE")
         try:
             # Re-check under the write lock: two processes can race into _connect
@@ -444,7 +448,7 @@ class Vault:
                 src_path TEXT NOT NULL, target TEXT NOT NULL,
                 UNIQUE(src_path, target))""")
             con.execute("CREATE INDEX IF NOT EXISTS idx_links_src ON links(src_path)")
-            con.execute("DELETE FROM files")   # force cheap backfill on next reindex
+            con.execute("UPDATE files SET mtime = -1")  # force cheap backfill, keep keys
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema',?)",
                         (str(SCHEMA_VERSION),))
             con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

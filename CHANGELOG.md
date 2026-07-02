@@ -18,9 +18,12 @@
   CLI prints a `related:` line; MCP appends a `Related:` line to the first block.
 - **Schema v2 with cheap automatic migration.** Existing v1 index DBs are upgraded
   in place on first connect (race-safe `BEGIN IMMEDIATE` + re-check): `type`
-  column + `links` table added, `files` cleared so the next reindex backfills
-  both — every embedding comes from `emb_cache`, so **no re-embed**. Until that
-  reindex runs, types are NULL (the MCP server reindexes on boot).
+  column + `links` table added, and every `files` mtime is invalidated (keys kept
+  — deletion tracking must survive the migration, or files removed between the
+  last v1 index and the backfill would linger as searchable orphans) so the next
+  reindex backfills both — every embedding comes from `emb_cache`, so
+  **no re-embed**. Until that reindex runs, types are NULL (the MCP server
+  reindexes on boot).
 - Query log records the `type` filter when used; regression test added for the
   0.7.1 `parent/basename` tenant label fix.
 - Changelog repaired: entries for 0.5.0, 0.6.0 and 0.7.1 below were missing, and

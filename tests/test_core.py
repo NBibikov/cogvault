@@ -632,3 +632,32 @@ def test_query_log_tenant_label_disambiguated(tmp_path, monkeypatch):
     rec = json.loads(log.read_text().splitlines()[-1])
     assert rec["tenant"] == "agent-a/memory"
     assert rec["type"] == "reference"                 # filter is logged too
+
+
+def test_v1_migration_preserves_deletion_tracking(tmpvault):
+    """A file deleted between the last v1 index and the post-migration backfill
+    must still be purged. The first migration draft cleared `files` entirely,
+    which erased the deletion baseline and left the dead file's chunks matching
+    searches forever."""
+    import sqlite3
+    _write(tmpvault, "keep.md", "Durable note about connection pooling limits.")
+    _write(tmpvault, "dead.md", "Obsolete note about floppy disk rotation speeds.")
+    v = Vault(tmpvault)
+    v.reindex()
+    # Simulate v1 on-disk state…
+    con = sqlite3.connect(v.db_path)
+    con.execute("DROP TABLE links")
+    con.execute("DROP INDEX idx_chunks_type")
+    con.execute("ALTER TABLE chunks DROP COLUMN type")
+    con.execute("PRAGMA user_version=1")
+    con.commit(); con.close()
+    # …then the file disappears BEFORE anything reconnects (rename/cleanup window).
+    os.remove(os.path.join(tmpvault, "dead.md"))
+    v2 = Vault(tmpvault)
+    v2.reindex()                       # migration + backfill in one go
+    hits = v2.search("floppy disk rotation", k=3)
+    assert all(h["file"] != "dead.md" for h in hits)         # orphan purged
+    assert v2.search("connection pooling limits", k=1)       # survivor intact
+    con = sqlite3.connect(v2.db_path)
+    assert con.execute("SELECT COUNT(*) FROM chunks WHERE path='dead.md'").fetchone()[0] == 0
+    con.close()
