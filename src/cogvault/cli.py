@@ -35,6 +35,9 @@ def main(argv=None):
     se = sub.add_parser("search", help="Hybrid search")
     add_common(se); se.add_argument("query"); se.add_argument("-k", type=int, default=5)
     se.add_argument("--json", action="store_true")
+    se.add_argument("--type", default=None,
+                    help="Only cards whose frontmatter type matches "
+                         "(e.g. user, feedback, project, reference)")
 
     mc = sub.add_parser("mcp", help="Run stdio MCP server for this tenant")
     add_common(mc)
@@ -92,18 +95,20 @@ def main(argv=None):
     if a.cmd == "index":
         print(json.dumps(v.reindex()))
     elif a.cmd == "search":
-        res = v.search(a.query, k=a.k)
+        res = v.search(a.query, k=a.k, card_type=a.type)
         if not res and v.join_heal(timeout=600):
             # a corrupt index triggered a background rebuild — in a short-lived
             # CLI process the daemon thread would die at exit, leaving the index
             # broken and every future CLI call empty. Wait it out and retry once.
-            res = v.search(a.query, k=a.k)
+            res = v.search(a.query, k=a.k, card_type=a.type)
         if a.json:
             print(json.dumps(res, indent=2))
         else:
             for r in res:
                 print(f"  {r['score']:>8}  {r['file']}")
                 print(f"            {r['snippet'][:100]}")
+                if r.get("related"):
+                    print(f"            related: {', '.join(r['related'])}")
     elif a.cmd == "mcp":
         from .mcp_server import serve
         serve(a.tenant, cfg)

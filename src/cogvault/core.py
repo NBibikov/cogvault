@@ -20,7 +20,7 @@ import sqlite_vec
 # no query/passage prefixes required. Override via Config.model for English-only fleets.
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # 384-d
 DIM = 384
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # Index lives OUTSIDE the tenant's markdown dir by default, so it can never be
 # accidentally git-committed next to the source files. Override via Config.db_dir.
 DEFAULT_DB_DIR = os.path.join(
@@ -218,6 +218,63 @@ def strip_frontmatter(text: str) -> str:
     return _FRONTMATTER_RE.sub("", text, count=1)
 
 
+def parse_frontmatter_type(text: str) -> str | None:
+    """Extract the card type from a leading YAML frontmatter block, without a
+    YAML dependency (same minimal-parser philosophy as _parse_toml_minimal).
+    Recognizes both shapes used by memory cards:
+        type: reference                    (flat)
+        metadata:\n  type: reference       (nested)
+    Flat wins when both exist (deterministic). Returns a lowercased token, or
+    None for no frontmatter / no type / empty / null values. Any token is
+    accepted — no allowlist — so legacy cards degrade to None naturally."""
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return None
+    block = m.group(0).split("---", 2)[1]
+
+    def _clean(v: str) -> str | None:
+        v = v.strip().strip("\"'").strip().lower()
+        return v if v and v not in ("null", "~") else None
+
+    flat = None
+    nested = None
+    in_meta = False
+    for line in block.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indented = line[:1] in (" ", "\t")
+        if not indented:
+            in_meta = False
+            key, sep, val = line.partition(":")
+            if not sep:
+                continue
+            key = key.strip()
+            if key == "type" and flat is None:
+                flat = _clean(val)
+            elif key == "metadata" and not val.strip():
+                in_meta = True
+        elif in_meta:
+            key, sep, val = line.strip().partition(":")
+            if sep and key.strip() == "type" and nested is None:
+                nested = _clean(val)
+    return flat or nested
+
+
+# [[slug]], [[slug|alias]], [[slug#section]] — capture the slug only.
+_WIKILINK_RE = re.compile(r"\[\[([^\]\[|#\n]+)")
+
+def parse_wikilinks(text: str) -> list[str]:
+    """All [[wiki-link]] target slugs in a document, deduped, order preserved.
+    Slugs are returned as written; resolution to real files happens at search
+    time against the index (targets are filename stems by convention)."""
+    seen: dict[str, None] = {}
+    for slug in _WIKILINK_RE.findall(text):
+        slug = slug.strip()
+        if slug:
+            seen.setdefault(slug)
+    return list(seen)
+
+
 def chunk_markdown(text: str, chunk_chars: int) -> list[str]:
     """Split on blank lines, then pack paragraphs up to chunk_chars.
     A single paragraph longer than chunk_chars is hard-split: the embedding
@@ -322,6 +379,8 @@ class Vault:
         # old user_version before any future migration could read it.
         if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks'"
                        ).fetchone():
+            if con.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                self._migrate(con)
             return con
         con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")  # for future migrations
         con.executescript(f"""
@@ -330,12 +389,19 @@ class Vault:
                 cid TEXT,                          -- STABLE id = sha(path|hash), safe to reference
                 path TEXT, hash TEXT,
                 text TEXT, age_days REAL DEFAULT 0, evergreen INTEGER DEFAULT 0,
+                type TEXT,                         -- frontmatter card type (nullable)
                 UNIQUE(path, hash));
             CREATE INDEX IF NOT EXISTS idx_chunks_cid ON chunks(cid);
+            CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(type);
             CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, mtime REAL);
             CREATE TABLE IF NOT EXISTS emb_cache(
                 hash TEXT, model TEXT, vec BLOB, PRIMARY KEY(hash, model));
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS links(
+                src_path TEXT NOT NULL,            -- indexed file key
+                target   TEXT NOT NULL,            -- [[slug]] as written, no .md
+                UNIQUE(src_path, target));
+            CREATE INDEX IF NOT EXISTS idx_links_src ON links(src_path);
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                 chunk_id INTEGER PRIMARY KEY, embedding FLOAT[{self.cfg.dim}]);
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
@@ -354,6 +420,39 @@ class Vault:
             con.executemany("INSERT INTO meta(key,value) VALUES(?,?)", want.items())
         con.commit()
         return con
+
+    def _migrate(self, con) -> None:
+        """In-place schema upgrade v1 → v2 (type column + links table). Cheap by
+        design: chunk text is unchanged, so every embedding stays valid in
+        emb_cache — no re-embed. Clearing `files` forces the next reindex() to
+        re-run every file through _index_file (cache hits only), which backfills
+        the new `type` column and `links` rows. Until that reindex runs, types
+        are NULL (a `type` filter matches nothing) — the MCP server reindexes on
+        boot, and CLI users run `cogvault index` after upgrading anyway."""
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-check under the write lock: two processes can race into _connect
+            # on a v1 db; the loser must see the winner's work and no-op.
+            if con.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+                con.execute("COMMIT")
+                return
+            cols = {r[1] for r in con.execute("PRAGMA table_info(chunks)")}
+            if "type" not in cols:
+                con.execute("ALTER TABLE chunks ADD COLUMN type TEXT")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(type)")
+            con.execute("""CREATE TABLE IF NOT EXISTS links(
+                src_path TEXT NOT NULL, target TEXT NOT NULL,
+                UNIQUE(src_path, target))""")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_links_src ON links(src_path)")
+            con.execute("DELETE FROM files")   # force cheap backfill on next reindex
+            con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema',?)",
+                        (str(SCHEMA_VERSION),))
+            con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            con.execute("COMMIT")
+        except Exception:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
 
     def _model_mismatch(self, con) -> bool:
         """True if the index was built with a different model/dim than the current
@@ -397,13 +496,18 @@ class Vault:
                         "VALUES('delete', ?, (SELECT text FROM chunks WHERE id=?))", (cid, cid))
             con.execute("DELETE FROM vec_chunks WHERE chunk_id=?", (cid,))
         con.execute("DELETE FROM chunks WHERE path=?", (base,))
+        con.execute("DELETE FROM links WHERE src_path=?", (base,))
 
-    def _prepare_file(self, con, fp: str) -> list[tuple[str, str, bytes, bool]]:
+    def _prepare_file(self, con, fp: str) -> tuple[str | None, list[str], list[tuple]]:
         """Chunk a file and resolve each chunk's vector (emb_cache hit or fresh
-        embed) → [(chunk, hash, blob, from_cache)]. Read-only: called OUTSIDE the
-        write transaction, so embedding (the slow part) never holds the write lock
-        and concurrent searches aren't starved during a big reindex."""
+        embed) → (card_type, wikilinks, [(chunk, hash, blob, from_cache)]).
+        Type and links are parsed from the RAW text (before the optional
+        frontmatter strip — the type lives IN the frontmatter). Read-only: called
+        OUTSIDE the write transaction, so embedding (the slow part) never holds
+        the write lock and concurrent searches aren't starved during a big reindex."""
         text = open(fp, encoding="utf-8", errors="ignore").read()
+        ftype = parse_frontmatter_type(text)
+        links = parse_wikilinks(text)
         if self.cfg.strip_frontmatter:
             text = strip_frontmatter(text)
         out = []
@@ -415,7 +519,7 @@ class Vault:
                 out.append((ch, h, cached[0], True))
             else:
                 out.append((ch, h, _pack(embed([ch], self.cfg.model)[0]), False))
-        return out
+        return ftype, links, out
 
     def _index_file(self, con, key: str, fp: str, ev_re,
                     prepared: list | None = None) -> tuple[int, int, int]:
@@ -423,12 +527,13 @@ class Vault:
         age = _file_age_days(fp)
         if prepared is None:           # race fallback: file entered scope inside the txn
             prepared = self._prepare_file(con, fp)
+        ftype, links, rows = prepared
         n_chunks = n_new = n_cache = 0
-        for ch, h, blob, from_cache in prepared:
+        for ch, h, blob, from_cache in rows:
             stable = _sha(f"{key}\0{h}")           # deterministic, reindex-stable id
             cur = con.execute(
-                "INSERT OR IGNORE INTO chunks(cid,path,hash,text,age_days,evergreen) "
-                "VALUES(?,?,?,?,?,?)", (stable, key, h, ch, age, evergreen))
+                "INSERT OR IGNORE INTO chunks(cid,path,hash,text,age_days,evergreen,type) "
+                "VALUES(?,?,?,?,?,?,?)", (stable, key, h, ch, age, evergreen, ftype))
             if cur.rowcount == 0:      # exact (path,hash) already present this pass
                 continue
             rid = cur.lastrowid; n_chunks += 1
@@ -440,6 +545,10 @@ class Vault:
                 con.execute("INSERT OR REPLACE INTO emb_cache(hash,model,vec) VALUES(?,?,?)",
                             (h, self.cfg.model, blob))
             con.execute("INSERT INTO vec_chunks(chunk_id,embedding) VALUES(?,?)", (rid, blob))
+        con.execute("DELETE FROM links WHERE src_path=?", (key,))
+        if links:
+            con.executemany("INSERT OR IGNORE INTO links(src_path,target) VALUES(?,?)",
+                            [(key, t) for t in links])
         return n_chunks, n_new, n_cache
 
     # ---- incremental indexing (fleet-safe: only touches changed files) ----
@@ -487,7 +596,7 @@ class Vault:
                 # NB: execute() not executescript() — executescript issues an
                 # implicit COMMIT first, which would break BEGIN IMMEDIATE.
                 con.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('delete-all')")
-                for tbl in ("chunks", "vec_chunks", "files"):
+                for tbl in ("chunks", "vec_chunks", "files", "links"):
                     con.execute(f"DELETE FROM {tbl}")
                 for kv in {"model": self.cfg.model, "dim": str(self.cfg.dim),
                            "schema": str(SCHEMA_VERSION)}.items():
@@ -520,10 +629,11 @@ class Vault:
                 "chunks": n_chunks, "embedded": n_new, "cached": n_cache}
 
     # ---- search ----
-    def search(self, query: str, k: int = 5) -> list[dict]:
+    def search(self, query: str, k: int = 5, card_type: str | None = None) -> list[dict]:
+        card_type = (card_type or "").strip().lower() or None
         _t0 = time.perf_counter()
         try:
-            out = self._search(query, k)
+            out = self._search(query, k, card_type)
         except sqlite3.DatabaseError:
             # Resilient read-path (fleet-safe): a degraded/corrupt index (e.g. an
             # interrupted reindex left vec0 shadow tables inconsistent → "database
@@ -533,7 +643,8 @@ class Vault:
             self._heal_async()
             out = []
         from .obs import log_recall
-        log_recall(self.dir, query, out, (time.perf_counter() - _t0) * 1000)
+        log_recall(self.dir, query, out, (time.perf_counter() - _t0) * 1000,
+                   card_type=card_type)
         return out
 
     def _heal_async(self) -> None:
@@ -565,7 +676,13 @@ class Vault:
         t.join(timeout)
         return not t.is_alive()
 
-    def _search(self, query: str, k: int = 5) -> list[dict]:
+    # When a type filter is active, pull deeper candidate pools before filtering:
+    # the wanted type's chunks may sit below the unfiltered pool cutoff. 4× is a
+    # heuristic — a very rare type buried deeper can still be missed (documented
+    # limitation; vec0 MATCH can't take an arbitrary joined WHERE).
+    _FILTER_OVERFETCH = 4
+
+    def _search(self, query: str, k: int = 5, card_type: str | None = None) -> list[dict]:
         con = self._connect()
         try:
             # Same-dim model drift gives silent garbage vector ranking (no error
@@ -578,19 +695,35 @@ class Vault:
                       f"model; vector ranking is unreliable. Run `cogvault index` "
                       f"to rebuild (or fix .cogvault.toml/$COGVAULT_MODEL).",
                       file=sys.stderr)
+            over = self._FILTER_OVERFETCH if card_type else 1
             qv = _pack(embed([query], self.cfg.model)[0])
             vec_rows = con.execute(
                 "SELECT chunk_id FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
-                (qv, self.cfg.vec_pool)).fetchall()
+                (qv, self.cfg.vec_pool * over)).fetchall()
             terms = _fts_query(query)
             fts_rows = []
             if terms:
                 try:
                     fts_rows = con.execute(
                         "SELECT rowid FROM fts_chunks WHERE fts_chunks MATCH ? ORDER BY rank LIMIT ?",
-                        (terms, self.cfg.fts_pool)).fetchall()
+                        (terms, self.cfg.fts_pool * over)).fetchall()
                 except sqlite3.OperationalError:
                     fts_rows = []   # defensive: never let a bad query break recall
+            if card_type:
+                # Post-filter the candidate pools (rank order preserved), then
+                # truncate back to the configured pool sizes so RRF/decay/MMR see
+                # exactly what an unfiltered search of a type-pure tenant would.
+                cand = {cid for (cid,) in vec_rows} | {cid for (cid,) in fts_rows}
+                allowed: set[int] = set()
+                ids = list(cand)
+                for i in range(0, len(ids), 500):        # chunked IN() — SQLite var limit
+                    batch = ids[i:i + 500]
+                    ph = ",".join("?" * len(batch))
+                    allowed.update(r[0] for r in con.execute(
+                        f"SELECT id FROM chunks WHERE type=? AND id IN ({ph})",
+                        [card_type, *batch]))
+                vec_rows = [r for r in vec_rows if r[0] in allowed][: self.cfg.vec_pool]
+                fts_rows = [r for r in fts_rows if r[0] in allowed][: self.cfg.fts_pool]
             # RRF fusion
             fused: dict[int, float] = {}
             for r, (cid,) in enumerate(vec_rows):
@@ -611,15 +744,36 @@ class Vault:
             selected = self._mmr(con, ranked, k)
             out = []
             for rid in selected:
-                row = con.execute("SELECT cid,path,text FROM chunks WHERE id=?", (rid,)).fetchone()
+                row = con.execute("SELECT cid,path,text,type FROM chunks WHERE id=?",
+                                  (rid,)).fetchone()
                 if row:
                     text = row[2]
                     snip = text if self.cfg.snippet_chars <= 0 else text[: self.cfg.snippet_chars]
                     out.append({"id": row[0], "score": round(fused[rid], 5), "file": row[1],
-                                "text": text, "snippet": snip})
+                                "text": text, "snippet": snip, "type": row[3]})
+            if out:
+                related = self._related(con, out[0]["file"])
+                if related:
+                    out[0]["related"] = related
             return out
         finally:
             con.close()
+
+    def _related(self, con, src_key: str, cap: int = 8) -> list[str]:
+        """Resolve the [[wiki-links]] of one indexed file to card filenames that
+        actually exist in the index (exact stem match; ghost links are dropped).
+        Names only — the caller decides whether to fetch more."""
+        out: list[str] = []
+        for (target,) in con.execute(
+                "SELECT DISTINCT target FROM links WHERE src_path=?", (src_key,)):
+            row = con.execute(
+                "SELECT path FROM files WHERE path = ? OR path LIKE ? LIMIT 1",
+                (f"{target}.md", f"%{os.sep}{target}.md")).fetchone()
+            if row:
+                out.append(row[0])
+                if len(out) >= cap:
+                    break
+        return out
 
     def _mmr(self, con, ranked: list[int], k: int) -> list[int]:
         if self.cfg.mmr_lambda >= 1.0 or len(ranked) <= k:

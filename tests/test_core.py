@@ -504,3 +504,131 @@ def test_full_reindex_purges_orphaned_chunks(tmpvault):
     finally:
         con.close()
     assert ghosts == 0, "orphaned chunk survived a full rebuild"
+
+
+# ---- 0.8.0: frontmatter type filter + wiki-links ------------------------------
+
+def test_parse_frontmatter_type_unit():
+    from cogvault.core import parse_frontmatter_type as pft
+    assert pft("---\nname: x\nmetadata:\n  type: user\n---\nbody") == "user"
+    assert pft("---\ntype: feedback\n---\nbody") == "feedback"
+    assert pft('---\ntype: "Project"\n---\nbody') == "project"
+    assert pft("---\r\ntype: reference\r\n---\r\nbody") == "reference"
+    # flat wins over nested (deterministic)
+    assert pft("---\ntype: flatwin\nmetadata:\n  type: nested\n---\n") == "flatwin"
+    assert pft("no frontmatter at all") is None
+    assert pft("---\nname: x\n---\nbody") is None            # no type key
+    assert pft("---\ntype: null\n---\n") is None
+    assert pft("--- broken frontmatter\ntype: x\n") is None  # malformed block
+    # a body-level "type:" line after the frontmatter must be ignored
+    assert pft("---\nname: x\n---\n\ntype: bogus\n") is None
+
+
+def test_parse_wikilinks_unit():
+    from cogvault.core import parse_wikilinks as pw
+    text = "See [[b]] and [[c|alias]] plus [[d#section]] and [[b]] again. [not][links]"
+    assert pw(text) == ["b", "c", "d"]
+    assert pw("no links here") == []
+
+
+def test_type_filter_search(tmpvault):
+    _write(tmpvault, "who.md",
+           "---\nname: who\nmetadata:\n  type: user\n---\n\n"
+           "The operator prefers concise answers and works on trading systems.")
+    _write(tmpvault, "state.md",
+           "---\nname: state\ntype: project\n---\n\n"
+           "The operator dashboard project is half shipped, next milestone is auth.")
+    _write(tmpvault, "legacy.md",
+           "A legacy note about the operator with no frontmatter at all.")
+    v = Vault(tmpvault)
+    v.reindex()
+    allres = v.search("operator", k=5)
+    assert {r["file"] for r in allres} == {"who.md", "state.md", "legacy.md"}
+    assert all("type" in r for r in allres)
+    only_user = v.search("operator", k=5, card_type="user")
+    assert {r["file"] for r in only_user} == {"who.md"}
+    assert only_user[0]["type"] == "user"
+
+
+def test_missing_frontmatter_tolerated(tmpvault):
+    _write(tmpvault, "vestige-x.md",
+           "---\nvestige_id: abc\nnode_type: fact\n---\n\n"
+           "Orphan card about the deployment pipeline secret rotation.")
+    v = Vault(tmpvault)
+    v.reindex()
+    hit = v.search("deployment pipeline rotation", k=2)
+    assert hit and hit[0]["file"] == "vestige-x.md" and hit[0]["type"] is None
+    assert v.search("deployment pipeline rotation", k=2, card_type="user") == []
+
+
+def test_v1_db_migration_no_reembed(tmpvault):
+    import sqlite3
+    _write(tmpvault, "reference_a.md",
+           "---\nname: a\nmetadata:\n  type: reference\n---\n\n"
+           "Durable fact linking to [[reference_b]] for context.")
+    _write(tmpvault, "reference_b.md",
+           "---\nname: b\nmetadata:\n  type: reference\n---\n\nAnother durable fact.")
+    v = Vault(tmpvault)
+    v.reindex()
+    # Simulate a v1 database: drop the 0.8.0 additions and stamp the old version.
+    con = sqlite3.connect(v.db_path)
+    con.execute("DROP TABLE links")
+    con.execute("DROP INDEX idx_chunks_type")
+    con.execute("ALTER TABLE chunks DROP COLUMN type")
+    con.execute("PRAGMA user_version=1")
+    con.execute("DELETE FROM meta WHERE key='schema'")
+    con.commit(); con.close()
+    # A fresh Vault must migrate on connect (search must not raise) …
+    v2 = Vault(tmpvault)
+    v2.search("durable fact", k=1)
+    # … and the backfill reindex must be embed-free (everything from emb_cache).
+    stats = v2.reindex()
+    assert stats["embedded"] == 0 and stats["files_reindexed"] == 2
+    con = sqlite3.connect(v2.db_path)
+    assert con.execute("PRAGMA user_version").fetchone()[0] >= 2
+    assert con.execute("SELECT COUNT(*) FROM chunks WHERE type='reference'").fetchone()[0] > 0
+    assert con.execute("SELECT COUNT(*) FROM links").fetchone()[0] == 1
+    con.close()
+
+
+def test_related_top_result(tmpvault):
+    _write(tmpvault, "a.md",
+           "The quarterly billing incident playbook references [[b]] and [[ghost]].")
+    _write(tmpvault, "b.md", "Escalation contacts for the billing system.")
+    v = Vault(tmpvault)
+    v.reindex()
+    res = v.search("quarterly billing incident playbook", k=2)
+    assert res[0]["file"] == "a.md"
+    assert res[0].get("related") == ["b.md"]          # ghost link dropped
+    others = [r for r in res[1:]]
+    assert all("related" not in r for r in others)
+
+
+def test_related_updates_on_edit(tmpvault):
+    _write(tmpvault, "a.md", "Payment retry logic notes, see [[b]].")
+    _write(tmpvault, "b.md", "Retry backoff table.")
+    v = Vault(tmpvault)
+    v.reindex()
+    assert v.search("payment retry logic", k=1)[0].get("related") == ["b.md"]
+    time.sleep(0.02)
+    _write(tmpvault, "a.md", "Payment retry logic notes, link removed.")
+    os.utime(os.path.join(tmpvault, "a.md"))
+    v.reindex()
+    assert "related" not in v.search("payment retry logic", k=1)[0]
+
+
+def test_query_log_tenant_label_disambiguated(tmp_path, monkeypatch):
+    """Locks in the 0.7.1 fix: every agent tenant is ~/Agents/<name>/memory, so a
+    bare-basename label collapsed the whole fleet into one 'memory' bucket."""
+    import json
+    tenant = tmp_path / "agent-a" / "memory"
+    tenant.mkdir(parents=True)
+    (tenant / "note.md").write_text("A small note about socket timeouts.")
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv("COGVAULT_LOG", str(log))
+    v = Vault(str(tenant))
+    v.reindex()
+    v.search("socket timeouts", k=1, card_type="reference")
+    rec = json.loads(log.read_text().splitlines()[-1])
+    assert rec["tenant"] == "agent-a/memory"
+    assert rec["type"] == "reference"                 # filter is logged too

@@ -46,7 +46,10 @@ class MCPServer:
                                "semantic + keyword).",
                 "inputSchema": {"type": "object", "properties": {
                     "query": {"type": "string", "description": "What to recall"},
-                    "limit": {"type": "integer", "default": 5}},
+                    "limit": {"type": "integer", "default": 5},
+                    "type": {"type": "string", "description":
+                             "Only recall cards of this frontmatter type "
+                             "(e.g. user, feedback, project, reference)"}},
                     "required": ["query"]},
             },
             "cogvault_record": {
@@ -77,12 +80,17 @@ class MCPServer:
             name = p.get("name"); args = p.get("arguments", {})
             try:
                 if name == "cogvault_recall":
-                    res = self.vault.search(args["query"], k=args.get("limit", 5))
+                    res = self.vault.search(args["query"], k=args.get("limit", 5),
+                                            card_type=args.get("type"))
                     if not res:
                         text = "No matching memories found."
                     else:
-                        text = "\n\n".join(
-                            f"[{r['score']}] {r['file']}\n{r['text']}" for r in res)
+                        def _block(r):
+                            b = f"[{r['score']}] {r['file']}\n{r['text']}"
+                            if r.get("related"):
+                                b += f"\nRelated: {', '.join(r['related'])}"
+                            return b
+                        text = "\n\n".join(_block(r) for r in res)
                     return self._ok(rid, {"content": [{"type": "text", "text": text}]})
                 if name == "cogvault_record":
                     fp = _write_card(self.tenant_dir, args["content"], args.get("title"))

@@ -27,7 +27,7 @@ def _log_path() -> str | None:
     return os.path.join(cache, "query-log.jsonl")
 
 def log_recall(tenant: str, query: str, results: list, latency_ms: float,
-               ts: float | None = None):
+               ts: float | None = None, card_type: str | None = None):
     """Append one structured recall event. Best-effort: never raises into search()."""
     path = _log_path()
     if not path:
@@ -40,6 +40,7 @@ def log_recall(tenant: str, query: str, results: list, latency_ms: float,
             "event": "recall",
             "tenant": tenant_label(tenant),
             "query": query,
+            **({"type": card_type} if card_type else {}),
             "n_results": len(results),
             "top_score": top["score"] if top else None,
             "top_file": top["file"] if top else None,

@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.0 — 2026-07-02 — card types, wiki-links, schema v2
+
+- **Card-type filter.** The YAML frontmatter `type` of each card (both the flat
+  `type: reference` and the nested `metadata:\n  type: reference` shapes) is parsed
+  at index time — no YAML dependency, same minimal-parser philosophy as the TOML
+  reader — and stored per chunk. Filter recall with CLI `search --type <t>`, MCP
+  `cogvault_recall` `type` param, or `Vault.search(card_type=...)`. Every hit now
+  carries a `type` field (None for cards without frontmatter — legacy cards degrade
+  gracefully). Filtering post-filters 4×-deepened candidate pools (vec0 `MATCH`
+  can't take a joined WHERE); a very rare type buried below that depth can be
+  missed — documented limitation.
+- **Wiki-link awareness.** `[[slug]]` / `[[slug|alias]]` / `[[slug#section]]`
+  targets are indexed into a `links` table; the TOP search result gains a
+  `related` list of linked card filenames that actually exist in the index
+  (ghost links dropped; exact stem match — case-variant links won't resolve).
+  CLI prints a `related:` line; MCP appends a `Related:` line to the first block.
+- **Schema v2 with cheap automatic migration.** Existing v1 index DBs are upgraded
+  in place on first connect (race-safe `BEGIN IMMEDIATE` + re-check): `type`
+  column + `links` table added, `files` cleared so the next reindex backfills
+  both — every embedding comes from `emb_cache`, so **no re-embed**. Until that
+  reindex runs, types are NULL (the MCP server reindexes on boot).
+- Query log records the `type` filter when used; regression test added for the
+  0.7.1 `parent/basename` tenant label fix.
+- Changelog repaired: entries for 0.5.0, 0.6.0 and 0.7.1 below were missing, and
+  ordering is now strictly descending.
+
+## 0.7.1 — 2026-07-02 — correctness & concurrency fixes
+
+- **Per-(process, model) embedder registry.** A single global embedder silently
+  embedded other-model tenants with the wrong model and persisted poisoned vectors
+  into `emb_cache` — permanent silent recall degradation.
+- **Model-mismatch wipe order.** FTS5 `delete-all` now runs BEFORE the content table
+  is cleared (the old order left stale postings misattributed to reused rowids);
+  a full rebuild clears ALL derived rows, not just paths known to `files`;
+  `emb_cache` survives the wipe (it is model-keyed, switching back stays cheap).
+- **Reads don't stall behind reindex.** Embeddings are computed OUTSIDE the write
+  transaction; schema DDL + `user_version` stamp happen only on db creation, so the
+  read path takes no write lock.
+- **Single-flight heal** per db + `Vault.join_heal()`; CLI search waits out a
+  triggered heal and retries once instead of leaving a broken index behind.
+- **Loud stderr warnings**: unparsable/unusable `.cogvault.toml`, model mismatch on
+  reindex (full re-embed) and on search (unreliable vector ranking).
+- **Tenant db key**: path realpath'd + casefolded on macOS/Windows — case-variant
+  spellings of one dir no longer maintain two flapping indexes.
+- **Query-log tenant label** is now `parent/basename` (fleet tenants all named
+  `memory` were indistinguishable); `analyze` matches legacy labels too.
+- **MCP**: `serverInfo` reports the real version, JSON-RPC notifications are not
+  answered, `ping` supported; `record` cards get frontmatter and collision-safe
+  filenames.
+- Oversized paragraphs hard-split at `chunk_chars` so their tails stay visible to
+  the vector channel; minimal-TOML parser respects `#` inside quotes.
+- Tests: `conftest` isolates the cache dir and query log from the real `~/.cache`
+  (tests had leaked 249 MB of dbs); regressions for the embedder registry, FTS wipe
+  order, and orphan purge.
+
 ## 0.7.0 — 2026-06-28 — per-tenant config
 
 - **`.cogvault.toml` per-tenant config.** A tenant can now declare its embedding
@@ -15,6 +70,31 @@
   - TOML via stdlib `tomllib` (3.11+) with a minimal flat-key fallback for 3.10.
   - cogvault never *writes* the file — read-only if present.
   - New `--model` CLI flag for one-off overrides. New public `apply_tenant_config()`.
+
+## 0.6.0 — 2026-06-28 — index folder trees (Obsidian vaults & knowledge bases)
+
+Opt-in multi-source support: a tenant can be a nested vault, not just a flat
+directory. Flat agent-memory tenants are unaffected (all new options default off).
+
+- `Config`: `recursive`, `strip_frontmatter`, `ignore_globs`.
+- Recursive walk keys files by path RELATIVE to the tenant, so same-named notes in
+  different folders no longer collide on basename.
+- `strip_frontmatter` drops a leading YAML `--- … ---` block before chunking so its
+  keys don't pollute embeddings; `ignore_globs` skips paths (e.g. `.obsidian/*`,
+  `Templates/*`); the recursive walk prunes dotfile dirs.
+- CLI: `--recursive` / `--strip-frontmatter` / `--ignore` on `index|search|mcp`.
+- Validated on a real ~3,500-note Obsidian vault: 9,544 chunks, first index ~216 s,
+  warm recall 9-10 ms.
+
+## 0.5.0 — 2026-06-28 — first public release
+
+Fleet-grade local memory over plain Markdown, published to GitHub (MIT).
+
+- Atomic model-mismatch guard + rebuild inside one transaction (no more malformed
+  vec0 shadow tables after a crash mid-rebuild).
+- Resilient self-healing search: a corrupt index returns empty and triggers one
+  background rebuild instead of raising into the agent.
+- Packaging for fleet install (`pip install -e`), entry point `cogvault`.
 
 ## 0.4.0 — 2026-06-27 — observability
 

@@ -112,7 +112,23 @@ cogvault search --tenant ~/agent/memory "how do I restart the worker service"
 
 # enable temporal decay (recent wins) and tune diversity
 cogvault search --tenant ~/agent/memory "deployment steps" --half-life 30 --mmr 0.5
+
+# only cards of one frontmatter type (user / feedback / project / reference / …)
+cogvault search --tenant ~/agent/memory "hard rules for deploys" --type feedback
 ```
+
+### Memory cards
+
+cogvault understands two lightweight Markdown conventions (both optional —
+plain files index fine):
+
+- **Frontmatter `type`** — either flat (`type: reference`) or nested
+  (`metadata:` → `type: reference`). Parsed at index time and filterable at
+  search time (`--type`, MCP `type` param, `search(card_type=...)`). Every hit
+  carries a `type` field; cards without frontmatter get `null`.
+- **`[[wiki-links]]`** — link targets are indexed, and the top search result
+  includes a `related` list of linked cards that exist in the index (ghost
+  links are dropped; matching is by exact filename stem).
 
 ### As an MCP server (Claude Code, Cursor, any MCP client)
 
@@ -122,7 +138,9 @@ claude mcp add cogvault -- cogvault mcp --tenant ~/agent/memory
 
 Exposes two tools:
 
-- `cogvault_recall` — natural-language hybrid search over this agent's memory
+- `cogvault_recall` — natural-language hybrid search over this agent's memory.
+  Optional `type` param filters to one frontmatter card type; the top result
+  includes a `Related:` line built from its `[[wiki-links]]`.
 - `cogvault_record` — save a fact; it's written as a Markdown card and indexed
 
 ### Indexing a folder tree (Obsidian vaults, knowledge bases)
