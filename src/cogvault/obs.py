@@ -1,7 +1,7 @@
 """
 cogvault.obs — lightweight JSONL query log for effectiveness analysis.
 
-One append-only line per recall, written to ~/.cache/cogvault/query-log.jsonl
+One append-only line per recall/record, written to ~/.cache/cogvault/query-log.jsonl
 (override with COGVAULT_LOG, or "" / "off" to disable). No external deps, no PII
 beyond the query text the agent already sees. Used by `cogvault analyze`.
 """
@@ -26,29 +26,52 @@ def _log_path() -> str | None:
         os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "cogvault")
     return os.path.join(cache, "query-log.jsonl")
 
-def log_recall(tenant: str, query: str, results: list, latency_ms: float,
-               ts: float | None = None, card_type: str | None = None):
-    """Append one structured recall event. Best-effort: never raises into search()."""
+# Rotate past this size (keep one .1 generation) — the log is append-only and
+# would otherwise grow unbounded across the fleet's lifetime.
+MAX_LOG_BYTES = 5_000_000
+
+def _append(rec: dict):
+    """Append one event line. Best-effort: observability never raises into callers."""
     path = _log_path()
     if not path:
         return
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        top = results[0] if results else None
-        rec = {
-            "ts": round(ts if ts is not None else time.time(), 3),
-            "event": "recall",
-            "tenant": tenant_label(tenant),
-            "query": query,
-            **({"type": card_type} if card_type else {}),
-            "n_results": len(results),
-            "top_score": top["score"] if top else None,
-            "top_file": top["file"] if top else None,
-            "scores": [r["score"] for r in results[:5]],
-            "latency_ms": round(latency_ms, 1),
-            "empty": not results,
-        }
+        try:
+            if os.path.getsize(path) > MAX_LOG_BYTES:
+                os.replace(path, path + ".1")
+        except OSError:
+            pass                       # no log yet, or a concurrent rotate won
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
-        pass   # observability must never break recall
+        pass
+
+def log_recall(tenant: str, query: str, results: list, latency_ms: float,
+               ts: float | None = None, card_type: str | None = None):
+    """Append one structured recall event."""
+    top = results[0] if results else None
+    _append({
+        "ts": round(ts if ts is not None else time.time(), 3),
+        "event": "recall",
+        "tenant": tenant_label(tenant),
+        "query": query,
+        **({"type": card_type} if card_type else {}),
+        "n_results": len(results),
+        "top_score": top["score"] if top else None,
+        "top_file": top["file"] if top else None,
+        "scores": [r["score"] for r in results[:5]],
+        "latency_ms": round(latency_ms, 1),
+        "empty": not results,
+    })
+
+def log_record(tenant: str, file: str, content: str, ts: float | None = None):
+    """Append one write event — `analyze` pairs these with recalls to show which
+    agents actually write memory vs only read it."""
+    _append({
+        "ts": round(ts if ts is not None else time.time(), 3),
+        "event": "record",
+        "tenant": tenant_label(tenant),
+        "file": file,
+        "chars": len(content),
+    })

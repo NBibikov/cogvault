@@ -101,6 +101,11 @@ def main(argv=None):
             # CLI process the daemon thread would die at exit, leaving the index
             # broken and every future CLI call empty. Wait it out and retry once.
             res = v.search(a.query, k=a.k, card_type=a.type)
+        if not res:
+            # stderr so --json stdout stays parseable; same gap-closing nudge
+            # the MCP server gives — subagents hit this path via the CLI.
+            print("cogvault: no hits — if you solve this, record a card so the "
+                  "next recall lands.", file=sys.stderr)
         if a.json:
             print(json.dumps(res, indent=2))
         else:
@@ -123,7 +128,7 @@ def _analyze(a) -> int:
         print("No query log yet. Run some recalls first (log: "
               f"{path or 'disabled'}).")
         return 0
-    rows = []
+    rows, wrows = [], []
     tfilter = None
     if a.tenant:
         from .obs import tenant_label
@@ -135,13 +140,14 @@ def _analyze(a) -> int:
                 d = json.loads(line)
             except Exception:
                 continue
-            if d.get("event") != "recall":
-                continue
             if tfilter and d.get("tenant") not in tfilter:
                 continue
-            rows.append(d)
-    if not rows:
-        print("No recall events match.")
+            if d.get("event") == "recall":
+                rows.append(d)
+            elif d.get("event") == "record":
+                wrows.append(d)
+    if not rows and not wrows:
+        print("No events match.")
         return 0
     n = len(rows)
     empties = sum(1 for r in rows if r.get("empty"))
@@ -151,26 +157,38 @@ def _analyze(a) -> int:
     for r in rows:
         by_tenant[r.get("tenant", "?")] = by_tenant.get(r.get("tenant", "?"), 0) + 1
 
+    writes_by_tenant: dict[str, int] = {}
+    for r in wrows:
+        writes_by_tenant[r.get("tenant", "?")] = writes_by_tenant.get(r.get("tenant", "?"), 0) + 1
+
     if a.json:
         print(json.dumps({
-            "recalls": n, "empty_rate": round(empties / n, 3),
+            "recalls": n, "empty_rate": round(empties / n, 3) if n else None,
             "latency_p50_ms": round(statistics.median(lat), 1) if lat else None,
             "latency_p95_ms": round(sorted(lat)[int(len(lat) * 0.95)], 1) if len(lat) > 2 else None,
             "avg_top_score": round(statistics.mean(tops), 5) if tops else None,
-            "by_tenant": by_tenant}, indent=2))
+            "by_tenant": by_tenant,
+            "records": len(wrows), "records_by_tenant": writes_by_tenant}, indent=2))
         return 0
 
     print(f"cogvault — recall effectiveness  ({path})\n")
     print(f"  recalls         {n}")
-    print(f"  no-hit rate     {empties}/{n} ({empties/n:.0%})   "
-          f"← high = memory gaps or query mismatch")
+    if n:
+        print(f"  no-hit rate     {empties}/{n} ({empties/n:.0%})   "
+              f"← high = memory gaps or query mismatch")
     if lat:
         print(f"  latency p50/p95 {statistics.median(lat):.0f} / "
               f"{sorted(lat)[int(len(lat)*0.95)] if len(lat)>2 else lat[-1]:.0f} ms")
     if tops:
         print(f"  avg top score   {statistics.mean(tops):.4f}")
-    print(f"  by tenant       " + ", ".join(f"{t}:{c}" for t, c in
-          sorted(by_tenant.items(), key=lambda x: -x[1])))
+    if by_tenant:
+        print(f"  by tenant       " + ", ".join(f"{t}:{c}" for t, c in
+              sorted(by_tenant.items(), key=lambda x: -x[1])))
+    # Read-only tenants are the actionable half of this line: agents that never
+    # record are accumulating unwritten lessons.
+    print(f"  records         {len(wrows)}" + ("  (" + ", ".join(
+        f"{t}:{c}" for t, c in sorted(writes_by_tenant.items(), key=lambda x: -x[1])) + ")"
+        if writes_by_tenant else ""))
     # surface recent no-hit queries — these are the actionable signal
     misses = [r["query"] for r in rows if r.get("empty")][-8:]
     if misses:

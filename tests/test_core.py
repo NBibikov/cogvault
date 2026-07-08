@@ -661,3 +661,47 @@ def test_v1_migration_preserves_deletion_tracking(tmpvault):
     con = sqlite3.connect(v2.db_path)
     assert con.execute("SELECT COUNT(*) FROM chunks WHERE path='dead.md'").fetchone()[0] == 0
     con.close()
+
+
+def test_record_event_logged(tmpvault, monkeypatch):
+    """cogvault_record writes a `record` line so analyze can pair reads with writes."""
+    import json
+    from cogvault.mcp_server import MCPServer
+    logf = os.path.join(tmpvault, "qlog.jsonl")
+    monkeypatch.setenv("COGVAULT_LOG", logf)
+    srv = MCPServer(tmpvault, Config())
+    resp = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "cogvault_record",
+                                  "arguments": {"content": "Deploys need the staging flag set.",
+                                                "title": "deploy staging flag"}}})
+    assert "error" not in resp
+    recs = [json.loads(l) for l in open(logf)]
+    rec = [r for r in recs if r["event"] == "record"][-1]
+    assert rec["file"].startswith("card-")
+    assert rec["chars"] > 0
+    assert rec["tenant"].count("/") == 1          # parent/basename label, not bare
+
+
+def test_empty_recall_nudges_record(tmpvault):
+    """A no-hit recall is when the agent knows a card is missing — the MCP
+    response must point at cogvault_record, not dead-end with 'not found'."""
+    from cogvault.mcp_server import MCPServer
+    srv = MCPServer(tmpvault, Config())
+    srv.vault.reindex()
+    resp = srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                       "params": {"name": "cogvault_recall",
+                                  "arguments": {"query": "anything at all"}}})
+    text = resp["result"]["content"][0]["text"]
+    assert "cogvault_record" in text
+
+
+def test_query_log_rotates(tmpvault, monkeypatch):
+    """Past MAX_LOG_BYTES the log rolls to .1 instead of growing unbounded."""
+    from cogvault import obs
+    logf = os.path.join(tmpvault, "qlog.jsonl")
+    monkeypatch.setenv("COGVAULT_LOG", logf)
+    monkeypatch.setattr(obs, "MAX_LOG_BYTES", 100)
+    for i in range(5):
+        obs.log_record(tmpvault, f"card-{i}.md", "x" * 120)
+    assert os.path.exists(logf + ".1")
+    assert os.path.getsize(logf) <= 300           # rotated, not accumulated

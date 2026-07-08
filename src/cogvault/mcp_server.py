@@ -7,6 +7,7 @@ Tools: cogvault_recall (hybrid search), cogvault_record (append a markdown card)
 from __future__ import annotations
 import sys, json, os, datetime
 from .core import Vault, Config
+from .obs import log_record
 from . import __version__
 
 PROTOCOL = "2024-11-05"
@@ -83,7 +84,11 @@ class MCPServer:
                     res = self.vault.search(args["query"], k=args.get("limit", 5),
                                             card_type=args.get("type"))
                     if not res:
-                        text = "No matching memories found."
+                        # Close the loop on memory gaps: a no-hit recall is the
+                        # exact moment the agent knows a card is missing.
+                        text = ("No matching memories found. If you end up solving "
+                                "this, save the durable part with cogvault_record "
+                                "so the next recall lands.")
                     else:
                         def _block(r):
                             b = f"[{r['score']}] {r['file']}\n{r['text']}"
@@ -95,6 +100,7 @@ class MCPServer:
                 if name == "cogvault_record":
                     fp = _write_card(self.tenant_dir, args["content"], args.get("title"))
                     self.vault.reindex()
+                    log_record(self.tenant_dir, os.path.basename(fp), args["content"])
                     return self._ok(rid, {"content": [{"type": "text",
                             "text": json.dumps({"status": "ok", "file": os.path.basename(fp)})}]})
                 return self._err(rid, -32601, f"unknown tool {name}")

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.1 — 2026-07-08 — write-side telemetry & log hygiene
+
+- **`record` events in the query log.** `cogvault_record` (MCP) now logs one
+  `{"event": "record", tenant, file, chars}` line next to recalls; `analyze`
+  prints a `records` line with a per-tenant breakdown (and `records` /
+  `records_by_tenant` in `--json`). Read-only tenants — agents that recall but
+  never record — are now visible at a glance.
+- **No-hit nudge.** An empty recall is the exact moment an agent knows a memory
+  card is missing, so both the MCP "No matching memories found." response and
+  the CLI (stderr, keeping `--json` stdout clean) now suggest recording a card
+  after solving.
+- **Query-log rotation.** The append-only log rotates to `.1` past 5 MB (one
+  generation kept) instead of growing unbounded across the fleet's lifetime.
+
 ## 0.8.0 — 2026-07-02 — card types, wiki-links, schema v2
 
 - **Card-type filter.** The YAML frontmatter `type` of each card (both the flat
