@@ -65,6 +65,23 @@ def log_recall(tenant: str, query: str, results: list, latency_ms: float,
         "empty": not results,
     })
 
+def log_error(tenant: str, op: str, exc: BaseException, ts: float | None = None,
+              query: str | None = None):
+    """Append one failure event. Without this the fleet is blind to breakage:
+    a recall that raises reaches the agent as an MCP error and vanishes, so the
+    only symptom is an agent that mysteriously "forgot" something. `analyze`
+    surfaces these; keep the message short — the type is the actionable part."""
+    _append({
+        "ts": round(ts if ts is not None else time.time(), 3),
+        "event": "error",
+        "tenant": tenant_label(tenant),
+        "op": op,
+        "error": type(exc).__name__,
+        "message": str(exc)[:500],
+        **({"query": query} if query else {}),
+    })
+
+
 def log_record(tenant: str, file: str, content: str, ts: float | None = None):
     """Append one write event — `analyze` pairs these with recalls to show which
     agents actually write memory vs only read it."""

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.2 — 2026-07-28 — failure visibility
+
+- **`error` events in the query log.** Until now the log recorded only what
+  succeeded, so a broken tenant was indistinguishable from a forgetful agent:
+  an MCP recall that raised returned a JSON-RPC error to the caller and left no
+  trace, and a CLI recall died with a traceback into a subagent's scrollback.
+  Both paths now append one `{"event": "error", tenant, op, error, message}`
+  line via `obs.log_error()` before propagating. Failures are never swallowed —
+  the CLI still re-raises, the MCP server still answers `-32000`.
+- **`analyze` surfaces failures.** An `errors` line (with a per-exception-type
+  breakdown and the last five failures) prints above the no-hit list, and
+  `errors` / `errors_by_type` appear in `--json`. Errors rank above no-hits
+  because a no-hit is a memory gap while an error is broken plumbing.
+
 ## 0.8.1 — 2026-07-08 — write-side telemetry & log hygiene
 
 - **`record` events in the query log.** `cogvault_record` (MCP) now logs one

@@ -7,7 +7,7 @@ Tools: cogvault_recall (hybrid search), cogvault_record (append a markdown card)
 from __future__ import annotations
 import sys, json, os, datetime
 from .core import Vault, Config
-from .obs import log_record
+from .obs import log_record, log_error
 from . import __version__
 
 PROTOCOL = "2024-11-05"
@@ -105,6 +105,8 @@ class MCPServer:
                             "text": json.dumps({"status": "ok", "file": os.path.basename(fp)})}]})
                 return self._err(rid, -32601, f"unknown tool {name}")
             except Exception as e:
+                log_error(self.tenant_dir, name or "call", e,
+                          query=args.get("query") if isinstance(args, dict) else None)
                 return self._err(rid, -32000, str(e))
         if rid is None:
             return None               # unknown id-less message = notification: stay silent

@@ -705,3 +705,37 @@ def test_query_log_rotates(tmpvault, monkeypatch):
         obs.log_record(tmpvault, f"card-{i}.md", "x" * 120)
     assert os.path.exists(logf + ".1")
     assert os.path.getsize(logf) <= 300           # rotated, not accumulated
+
+
+def test_mcp_failure_is_logged_and_still_raised(tmpvault, monkeypatch):
+    """A failing recall must leave a trace: without the `error` event a broken
+    tenant is indistinguishable from an agent that simply forgot something.
+    The caller must STILL get its JSON-RPC error — logging is not swallowing."""
+    import json
+    from cogvault.mcp_server import MCPServer
+    logf = os.path.join(tmpvault, "qlog.jsonl")
+    monkeypatch.setenv("COGVAULT_LOG", logf)
+    srv = MCPServer(tmpvault, Config())
+
+    def boom(*a, **kw):
+        raise RuntimeError("index is toast")
+    monkeypatch.setattr(srv.vault, "search", boom)
+
+    resp = srv.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                       "params": {"name": "cogvault_recall",
+                                  "arguments": {"query": "deploy flag"}}})
+    assert resp["error"]["code"] == -32000         # caller still sees the failure
+    errs = [json.loads(l) for l in open(logf) if '"error"' in l]
+    err = [e for e in errs if e.get("event") == "error"][-1]
+    assert err["op"] == "cogvault_recall"
+    assert err["error"] == "RuntimeError"
+    assert err["query"] == "deploy flag"           # the query is the repro handle
+
+
+def test_obs_logging_never_raises_into_callers(tmpvault, monkeypatch):
+    """Observability is best-effort: an unwritable log must not take down a
+    recall. A broken log directory is an annoyance, not an outage."""
+    from cogvault import obs
+    monkeypatch.setenv("COGVAULT_LOG", "/nonexistent-root-dir/nope/log.jsonl")
+    obs.log_error(tmpvault, "search", ValueError("x"))   # must not raise
+    obs.log_record(tmpvault, "card.md", "content")

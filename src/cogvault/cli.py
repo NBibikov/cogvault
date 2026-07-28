@@ -92,6 +92,17 @@ def main(argv=None):
     if getattr(a, "ignore", None):     cfg.ignore_globs = tuple(a.ignore)
     v = Vault(a.tenant, cfg)
 
+    try:
+        return _run(a, v, cfg)
+    except Exception as e:
+        # Log before re-raising: a subagent's failed CLI recall would otherwise
+        # leave no trace anywhere, and the only symptom is a "forgetful" agent.
+        from .obs import log_error
+        log_error(a.tenant, a.cmd, e, query=getattr(a, "query", None))
+        raise
+
+
+def _run(a, v, cfg) -> int:
     if a.cmd == "index":
         print(json.dumps(v.reindex()))
     elif a.cmd == "search":
@@ -128,7 +139,7 @@ def _analyze(a) -> int:
         print("No query log yet. Run some recalls first (log: "
               f"{path or 'disabled'}).")
         return 0
-    rows, wrows = [], []
+    rows, wrows, erows = [], [], []
     tfilter = None
     if a.tenant:
         from .obs import tenant_label
@@ -146,7 +157,9 @@ def _analyze(a) -> int:
                 rows.append(d)
             elif d.get("event") == "record":
                 wrows.append(d)
-    if not rows and not wrows:
+            elif d.get("event") == "error":
+                erows.append(d)
+    if not rows and not wrows and not erows:
         print("No events match.")
         return 0
     n = len(rows)
@@ -161,6 +174,11 @@ def _analyze(a) -> int:
     for r in wrows:
         writes_by_tenant[r.get("tenant", "?")] = writes_by_tenant.get(r.get("tenant", "?"), 0) + 1
 
+    err_by_type: dict[str, int] = {}
+    for r in erows:
+        k = r.get("error", "?")
+        err_by_type[k] = err_by_type.get(k, 0) + 1
+
     if a.json:
         print(json.dumps({
             "recalls": n, "empty_rate": round(empties / n, 3) if n else None,
@@ -168,7 +186,9 @@ def _analyze(a) -> int:
             "latency_p95_ms": round(sorted(lat)[int(len(lat) * 0.95)], 1) if len(lat) > 2 else None,
             "avg_top_score": round(statistics.mean(tops), 5) if tops else None,
             "by_tenant": by_tenant,
-            "records": len(wrows), "records_by_tenant": writes_by_tenant}, indent=2))
+            "records": len(wrows), "records_by_tenant": writes_by_tenant,
+            "errors": len(erows),
+            "errors_by_type": err_by_type}, indent=2))
         return 0
 
     print(f"cogvault — recall effectiveness  ({path})\n")
@@ -189,6 +209,15 @@ def _analyze(a) -> int:
     print(f"  records         {len(wrows)}" + ("  (" + ", ".join(
         f"{t}:{c}" for t, c in sorted(writes_by_tenant.items(), key=lambda x: -x[1])) + ")"
         if writes_by_tenant else ""))
+    # Failures rank above no-hits: a no-hit is a memory gap, an error is broken
+    # plumbing, and a silently broken tenant looks exactly like a forgetful agent.
+    if erows:
+        print(f"  errors          {len(erows)}  (" + ", ".join(
+            f"{t}:{c}" for t, c in sorted(err_by_type.items(), key=lambda x: -x[1])) + ")"
+            + "   ← investigate")
+        for r in erows[-5:]:
+            print(f"    · {r.get('tenant','?')} {r.get('op','?')}: "
+                  f"{r.get('error','?')}: {str(r.get('message',''))[:60]}")
     # surface recent no-hit queries — these are the actionable signal
     misses = [r["query"] for r in rows if r.get("empty")][-8:]
     if misses:
