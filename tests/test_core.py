@@ -732,6 +732,20 @@ def test_mcp_failure_is_logged_and_still_raised(tmpvault, monkeypatch):
     assert err["query"] == "deploy flag"           # the query is the repro handle
 
 
+def test_standing_rule_cards_are_decay_exempt(tmpvault):
+    """feedback_/reference_/MEMORY cards are standing rules, not dated state:
+    an old `feedback_never_build_unasked` must not sink below a fresh session
+    note just because nobody edited the file. Dated project_ cards DO decay."""
+    import re
+    ev = re.compile(Config().evergreen_re)
+    for name in ("MEMORY.md", "INDEX.md", "reference_release_flow.md",
+                 "feedback_never_build_unasked.md", "architecture_overview.md"):
+        assert ev.match(name), f"{name} should be evergreen"
+    for name in ("project_daily_20260728.md", "2026-07-28.md",
+                 "card-20260728-120000-something.md"):
+        assert not ev.match(name), f"{name} should decay"
+
+
 def test_obs_logging_never_raises_into_callers(tmpvault, monkeypatch):
     """Observability is best-effort: an unwritable log must not take down a
     recall. A broken log directory is an annoyance, not an outage."""

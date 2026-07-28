@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.2 — 2026-07-28 — failure visibility
+## 0.8.2 — 2026-07-28 — failure visibility & evergreen standing rules
 
 - **`error` events in the query log.** Until now the log recorded only what
   succeeded, so a broken tenant was indistinguishable from a forgetful agent:
@@ -13,6 +13,12 @@
   breakdown and the last five failures) prints above the no-hit list, and
   `errors` / `errors_by_type` appear in `--json`. Errors rank above no-hits
   because a no-hit is a memory gap while an error is broken plumbing.
+- **`feedback_*` cards are decay-exempt.** The default `evergreen_re` covered
+  `MEMORY`/`INDEX`/`reference_`/`architecture` but not `feedback_` — so on a
+  tenant with `half_life_days` set, standing rules ("never build unasked", "no
+  Android commits") sank below fresh session notes purely because nobody had
+  edited the file in months. On the tenant-a tenant this exempted 200 more
+  chunks. Rebuild the index to recompute the flag on existing tenants.
 
 ## 0.8.1 — 2026-07-08 — write-side telemetry & log hygiene
 

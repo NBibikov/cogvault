@@ -173,7 +173,10 @@ class Config:
     mmr_lambda: float = 0.7          # 1=pure relevance, 0=pure diversity
     snippet_chars: int = 0           # 0 = return full chunk (agents have big context)
     db_dir: str = ""                 # "" = ~/.cache/cogvault; set to a dir to override
-    evergreen_re: str = r"^(MEMORY|INDEX|.*reference_|.*architecture).*"
+    # feedback_* is evergreen by nature: standing rules ("never build unasked",
+    # "no Android commits") don't expire because nobody touched the file in 90
+    # days — decaying them buries exactly the instructions memory exists to keep.
+    evergreen_re: str = r"^(MEMORY|INDEX|.*reference_|.*feedback_|.*architecture).*"
     # ---- source options (opt-in; flat agent-memory tenants keep the defaults) ----
     recursive: bool = False          # True = walk subdirectories (e.g. an Obsidian vault)
     strip_frontmatter: bool = False  # True = drop a leading YAML --- … --- block before chunking
