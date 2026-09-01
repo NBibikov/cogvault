@@ -190,14 +190,63 @@ class Config:
 # under the wrong model name — permanent silent recall degradation.
 _EMBEDDERS: dict = {}
 _EMBEDDERS_LOCK = threading.Lock()
+def embed_backend() -> str:
+    """Identity of the embedding BACKEND, stamped into each index's meta.
+
+    `model` + `dim` cannot detect a library that changes what a model outputs.
+    fastembed 0.6 switched MiniLM from CLS-token to mean pooling and stopped
+    L2-normalizing the multilingual model: same model name, same 384 dims, but
+    vectors that no longer live in the same space as the stored ones. A fleet
+    audit on 2026-09-01 found 35-50% of vectors on every multilingual tenant
+    diverging from freshly embedded text (cos as low as 0.198) with stored norms
+    ranging 2.07-3.06 within a single database — vec0 ranks by L2, so a query of
+    norm 5.3 against documents of norm 1.0 ranks mostly by magnitude, not
+    meaning. Stamping the library version makes that a detected mismatch (an
+    automatic rebuild) instead of silent, unexplained recall rot."""
+    try:
+        from importlib.metadata import version
+        return f"fastembed/{version('fastembed')}"
+    except Exception:
+        return "fastembed/unknown"
+
+
+def model_cache_dir() -> str:
+    """Where fastembed unpacks its ONNX weights.
+
+    Without an explicit cache_dir fastembed falls back to a temp directory. On
+    macOS that is $TMPDIR (/var/folders/...), which the OS periodically purges —
+    so an index or recall that ran fine yesterday dies today with
+    `NoSuchFile: [ONNXRuntimeError] Load model from /var/folders/...`. Four such
+    failures (tenant-a, tenant-b) sat in the query log before this was
+    pinned. Keep the weights next to the indexes, under a stable cache root."""
+    root = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
+    return os.environ.get("FASTEMBED_CACHE_PATH") or os.path.join(root, "fastembed")
+
+
 def _embedder(model: str):
     emb = _EMBEDDERS.get(model)
     if emb is None:
         with _EMBEDDERS_LOCK:
             emb = _EMBEDDERS.get(model)
             if emb is None:
-                from fastembed import TextEmbedding
-                emb = TextEmbedding(model_name=model)
+                import warnings
+                # fastembed >=0.6 warns that MiniLM now mean-pools instead of
+                # using the CLS token. Verified 2026-09-01 against three live
+                # tenants (agent-a, tenant-a, tenant-b; both pinned models):
+                # cos(stored_vector, fresh embed of the same text) == 1.0000 on
+                # every sampled chunk, so our indexes already match the current
+                # behaviour and need no re-embed. The warning fires on every CLI
+                # call and buries real output in subagent scrollback — drop it.
+                # If fastembed ever changes pooling FOR REAL, the guard in
+                # _model_changed() (model+dim in meta) will not catch it: re-run
+                # that cosine check after a major fastembed bump.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", message=".*mean pooling.*", category=UserWarning)
+                    from fastembed import TextEmbedding
+                    cache = model_cache_dir()
+                    os.makedirs(cache, exist_ok=True)
+                    emb = TextEmbedding(model_name=model, cache_dir=cache)
                 _EMBEDDERS[model] = emb
     return emb
 
@@ -419,7 +468,7 @@ class Vault:
         prev = {k: v for k, v in con.execute("SELECT key,value FROM meta")}
         if not prev:
             want = {"model": self.cfg.model, "dim": str(self.cfg.dim),
-                    "schema": str(SCHEMA_VERSION)}
+                    "backend": embed_backend(), "schema": str(SCHEMA_VERSION)}
             con.executemany("INSERT INTO meta(key,value) VALUES(?,?)", want.items())
         con.commit()
         return con
@@ -467,8 +516,15 @@ class Vault:
         prev = {k: v for k, v in con.execute("SELECT key,value FROM meta")}
         if not prev:
             return False
+        # An index written before backends were stamped has no "backend" key.
+        # Treat that as a mismatch ONLY if the recorded backend differs from the
+        # running one; a missing key means "unknown, pre-0.9.0" and is handled by
+        # the one-off fleet rebuild rather than by silently re-embedding every
+        # legacy tenant on first connect.
+        prev_backend = prev.get("backend")
         return (prev.get("model") != self.cfg.model
-                or prev.get("dim") != str(self.cfg.dim))
+                or prev.get("dim") != str(self.cfg.dim)
+                or (prev_backend is not None and prev_backend != embed_backend()))
 
     def _iter_files(self):
         """Yield (key, fullpath) for every .md to index. key is the file's path
@@ -606,6 +662,7 @@ class Vault:
                 for tbl in ("chunks", "vec_chunks", "files", "links"):
                     con.execute(f"DELETE FROM {tbl}")
                 for kv in {"model": self.cfg.model, "dim": str(self.cfg.dim),
+                           "backend": embed_backend(),
                            "schema": str(SCHEMA_VERSION)}.items():
                     con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", kv)
                 known = {}
@@ -704,9 +761,16 @@ class Vault:
                       file=sys.stderr)
             over = self._FILTER_OVERFETCH if card_type else 1
             qv = _pack(embed([query], self.cfg.model)[0])
-            vec_rows = con.execute(
-                "SELECT chunk_id FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+            # `distance` comes back alongside the id: RRF scores are pure rank
+            # reciprocals (capped at ~2/rrf_k) and say nothing about whether a
+            # hit is actually relevant, so we keep the raw vector distance to
+            # derive a real similarity for each result (see `sim` below).
+            vec_hits = con.execute(
+                "SELECT chunk_id, distance FROM vec_chunks WHERE embedding MATCH ? "
+                "ORDER BY distance LIMIT ?",
                 (qv, self.cfg.vec_pool * over)).fetchall()
+            vec_dist = {cid: d for cid, d in vec_hits}
+            vec_rows = [(cid,) for cid, _ in vec_hits]
             terms = _fts_query(query)
             fts_rows = []
             if terms:
@@ -756,8 +820,20 @@ class Vault:
                 if row:
                     text = row[2]
                     snip = text if self.cfg.snippet_chars <= 0 else text[: self.cfg.snippet_chars]
+                    # Raw vector distance for the top hit, surfaced so callers
+                    # (and the query log) have a real relevance signal. The RRF
+                    # `score` is a pure rank reciprocal capped at ~2/rrf_k, so it
+                    # says WHERE a hit ranked, never whether it is any good: over
+                    # 616 logged recalls it spanned 0.016-0.033 whether the answer
+                    # was correct or nonsense. `dist` is L2 on unnormalized model
+                    # output, so it is comparable only WITHIN one tenant+backend —
+                    # do not average it across the fleet. None when the chunk came
+                    # from BM25 only and never entered the vector pool.
+                    d = vec_dist.get(rid)
+                    dist = round(d, 4) if d is not None else None
                     out.append({"id": row[0], "score": round(fused[rid], 5), "file": row[1],
-                                "text": text, "snippet": snip, "type": row[3]})
+                                "text": text, "snippet": snip, "type": row[3],
+                                "dist": dist})
             if out:
                 related = self._related(con, out[0]["file"])
                 if related:

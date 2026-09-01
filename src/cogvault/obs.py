@@ -58,9 +58,17 @@ def log_recall(tenant: str, query: str, results: list, latency_ms: float,
         "query": query,
         **({"type": card_type} if card_type else {}),
         "n_results": len(results),
+        # `top_score` is the RRF rank-reciprocal: useful for debugging fusion,
+        # useless as relevance. Its whole observed range across 616 logged
+        # recalls was 0.016-0.033 (theoretical cap 2/rrf_k), identical for a
+        # correct hit and for nonsense. `top_dist` is the raw vector distance
+        # for the same hit — the only value here that actually tracks whether
+        # the answer was any good. Compare it only within one tenant+backend.
         "top_score": top["score"] if top else None,
+        "top_dist": top.get("dist") if top else None,
         "top_file": top["file"] if top else None,
         "scores": [r["score"] for r in results[:5]],
+        "dists": [r.get("dist") for r in results[:5]],
         "latency_ms": round(latency_ms, 1),
         "empty": not results,
     })

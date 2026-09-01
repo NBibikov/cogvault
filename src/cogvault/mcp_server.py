@@ -98,9 +98,20 @@ class MCPServer:
                         text = "\n\n".join(_block(r) for r in res)
                     return self._ok(rid, {"content": [{"type": "text", "text": text}]})
                 if name == "cogvault_record":
-                    fp = _write_card(self.tenant_dir, args["content"], args.get("title"))
+                    # Validate before writing. A missing/blank `content` used to
+                    # raise KeyError deep inside _write_card, which reached the
+                    # agent as an opaque JSON-RPC -32000 "'content'" — the agent
+                    # believed it had saved a memory that was never written (one
+                    # such silent loss on tenant-d, 2026-07). Fail loudly with
+                    # an invalid-params error naming the field instead.
+                    content = args.get("content") if isinstance(args, dict) else None
+                    if not isinstance(content, str) or not content.strip():
+                        return self._err(rid, -32602,
+                            "cogvault_record requires a non-empty string 'content' "
+                            "(the fact to remember); nothing was written.")
+                    fp = _write_card(self.tenant_dir, content, args.get("title"))
                     self.vault.reindex()
-                    log_record(self.tenant_dir, os.path.basename(fp), args["content"])
+                    log_record(self.tenant_dir, os.path.basename(fp), content)
                     return self._ok(rid, {"content": [{"type": "text",
                             "text": json.dumps({"status": "ok", "file": os.path.basename(fp)})}]})
                 return self._err(rid, -32601, f"unknown tool {name}")

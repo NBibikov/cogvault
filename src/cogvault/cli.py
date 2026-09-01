@@ -166,6 +166,26 @@ def _analyze(a) -> int:
     empties = sum(1 for r in rows if r.get("empty"))
     lat = [r["latency_ms"] for r in rows if r.get("latency_ms") is not None]
     tops = [r["top_score"] for r in rows if r.get("top_score") is not None]
+    # Vector distance is the only logged value that tracks relevance, but it is
+    # comparable only WITHIN a tenant+backend (different models, and even the
+    # same model across a fastembed pooling change, live on different scales).
+    # So report a per-tenant p50/p90 rather than one meaningless fleet average,
+    # and flag each tenant's own worst decile as "weak" — those queries are where
+    # recall returned something but probably not the right thing.
+    dists_by_tenant: dict[str, list[float]] = {}
+    for r in rows:
+        d = r.get("top_dist")
+        if d is not None:
+            dists_by_tenant.setdefault(r.get("tenant", "?"), []).append(d)
+    weak_queries: list[tuple[str, float, str]] = []
+    for r in rows:
+        d, t = r.get("top_dist"), r.get("tenant", "?")
+        pool = dists_by_tenant.get(t) or []
+        if d is None or len(pool) < 10:
+            continue
+        p90 = sorted(pool)[int(len(pool) * 0.9)]
+        if d >= p90:                      # larger distance = worse match
+            weak_queries.append((t, d, r.get("query", "")))
     by_tenant: dict[str, int] = {}
     for r in rows:
         by_tenant[r.get("tenant", "?")] = by_tenant.get(r.get("tenant", "?"), 0) + 1
@@ -184,7 +204,14 @@ def _analyze(a) -> int:
             "recalls": n, "empty_rate": round(empties / n, 3) if n else None,
             "latency_p50_ms": round(statistics.median(lat), 1) if lat else None,
             "latency_p95_ms": round(sorted(lat)[int(len(lat) * 0.95)], 1) if len(lat) > 2 else None,
+            # avg_top_score is retained for continuity but is NOT a quality
+            # signal: RRF scores are rank reciprocals capped at 2/rrf_k.
             "avg_top_score": round(statistics.mean(tops), 5) if tops else None,
+            "dist_by_tenant": {t: {"p50": round(statistics.median(v), 3),
+                                   "p90": round(sorted(v)[int(len(v) * 0.9)], 3),
+                                   "n": len(v)}
+                               for t, v in sorted(dists_by_tenant.items())},
+            "weak_hits": len(weak_queries),
             "by_tenant": by_tenant,
             "records": len(wrows), "records_by_tenant": writes_by_tenant,
             "errors": len(erows),
@@ -194,13 +221,22 @@ def _analyze(a) -> int:
     print(f"cogvault — recall effectiveness  ({path})\n")
     print(f"  recalls         {n}")
     if n:
-        print(f"  no-hit rate     {empties}/{n} ({empties/n:.0%})   "
-              f"← high = memory gaps or query mismatch")
+        # A hybrid search returns the top-k of its candidate pool, so a truly
+        # empty result only happens on an empty tenant — this rate is ~always 0
+        # and must NOT be read as "recall is healthy". The weak-hit list below
+        # is the real signal for a query that found nothing useful.
+        print(f"  empty results   {empties}/{n} ({empties/n:.0%})   "
+              f"← only ever non-zero on an empty index")
     if lat:
         print(f"  latency p50/p95 {statistics.median(lat):.0f} / "
               f"{sorted(lat)[int(len(lat)*0.95)] if len(lat)>2 else lat[-1]:.0f} ms")
-    if tops:
-        print(f"  avg top score   {statistics.mean(tops):.4f}")
+    if dists_by_tenant:
+        print("  top-hit distance (lower = better; per tenant, not comparable across)")
+        for t, v in sorted(dists_by_tenant.items(), key=lambda x: -len(x[1])):
+            if len(v) < 3:            # too few samples for a p50/p90 to mean anything
+                continue
+            print(f"    {t:28} p50={statistics.median(v):6.3f} "
+                  f"p90={sorted(v)[int(len(v)*0.9)]:6.3f}  n={len(v)}")
     if by_tenant:
         print(f"  by tenant       " + ", ".join(f"{t}:{c}" for t, c in
               sorted(by_tenant.items(), key=lambda x: -x[1])))
@@ -218,6 +254,10 @@ def _analyze(a) -> int:
         for r in erows[-5:]:
             print(f"    · {r.get('tenant','?')} {r.get('op','?')}: "
                   f"{r.get('error','?')}: {str(r.get('message',''))[:60]}")
+    if weak_queries:
+        print("\n  weakest hits (worst decile by vector distance — recall likely missed):")
+        for t, d, q in sorted(weak_queries, key=lambda x: -x[1])[:8]:
+            print(f"    · [{t}] dist={d:.3f}  {q[:58]}")
     # surface recent no-hit queries — these are the actionable signal
     misses = [r["query"] for r in rows if r.get("empty")][-8:]
     if misses:

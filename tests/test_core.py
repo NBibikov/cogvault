@@ -1,6 +1,7 @@
 import os, time, tempfile, shutil, threading
 import pytest
 from cogvault.core import Vault, Config, chunk_markdown, strip_frontmatter
+import cogvault.core as core
 
 
 def _concurrent_writer(tenant, ident, q):
@@ -753,3 +754,47 @@ def test_obs_logging_never_raises_into_callers(tmpvault, monkeypatch):
     monkeypatch.setenv("COGVAULT_LOG", "/nonexistent-root-dir/nope/log.jsonl")
     obs.log_error(tmpvault, "search", ValueError("x"))   # must not raise
     obs.log_record(tmpvault, "card.md", "content")
+
+
+def test_backend_change_is_a_mismatch(tmpvault, monkeypatch):
+    """A library that changes what a model OUTPUTS must invalidate the index.
+
+    fastembed 0.6 switched MiniLM to mean pooling and stopped normalizing the
+    multilingual model: same model name, same dim, incompatible vectors. Before
+    0.9.0 that was undetectable, and 35-50% of stored vectors on every
+    multilingual tenant silently drifted out of the query's space.
+    """
+    _write(tmpvault, "a.md", "The gateway routes clients through one local entry point.")
+    v = Vault(tmpvault)
+    v.reindex()
+    con = v._connect()
+    assert dict(con.execute("SELECT key,value FROM meta"))["backend"] == core.embed_backend()
+    assert not v._model_mismatch(con)          # same backend → no rebuild
+    monkeypatch.setattr(core, "embed_backend", lambda: "fastembed/99.0.0")
+    assert v._model_mismatch(con)              # bumped backend → rebuild
+    con.close()
+
+
+def test_legacy_index_without_backend_is_not_a_mismatch(tmpvault):
+    """An index written before 0.9.0 has no `backend` key. That means "unknown",
+    not "wrong" — it must NOT trigger a surprise full re-embed on first connect."""
+    _write(tmpvault, "a.md", "The gateway routes clients through one local entry point.")
+    v = Vault(tmpvault)
+    v.reindex()
+    con = v._connect()
+    con.execute("DELETE FROM meta WHERE key='backend'")
+    con.commit()
+    assert not v._model_mismatch(con)
+    con.close()
+
+
+def test_search_results_carry_vector_distance(tmpvault):
+    """RRF `score` is a rank reciprocal and says nothing about relevance; `dist`
+    is the value callers and the query log can actually judge a hit by."""
+    _write(tmpvault, "gateway.md",
+           "The gateway routes every client through a single local entry point on a fixed port.")
+    v = Vault(tmpvault)
+    v.reindex()
+    res = v.search("how does the gateway route clients", k=1)
+    assert res and res[0]["dist"] is not None
+    assert res[0]["dist"] >= 0

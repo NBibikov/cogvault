@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.9.0 — 2026-09-01 — embedding-backend drift, honest metrics
+
+The headline bug: **recall on every multilingual tenant had been silently
+degrading for weeks**, and none of the existing metrics could show it.
+
+- **Pinned the fastembed model cache.** `TextEmbedding` was constructed without
+  `cache_dir`, so fastembed unpacked its ONNX weights into `$TMPDIR`
+  (`/var/folders/...` on macOS). When the OS purged that, indexing and recall
+  died with `NoSuchFile: [ONNXRuntimeError] Load model from /var/folders/...` —
+  four such failures were sitting in the query log (tenant-a, tenant-b).
+  Weights now live under `~/.cache/fastembed` (override:
+  `$FASTEMBED_CACHE_PATH`), next to the indexes they belong to.
+- **Detect embedding-BACKEND drift, not just model drift.** `_model_mismatch()`
+  compared `model` + `dim`, which cannot catch a library that changes what a
+  model *outputs*. fastembed 0.6 switched MiniLM to mean pooling and stopped
+  L2-normalizing the multilingual model: same name, same 384 dims, different
+  vector space. A fleet audit found **35-50% of stored vectors on every
+  multilingual tenant diverging from freshly embedded text** (cos as low as
+  0.198), with stored norms spanning 2.07-3.06 *within one database* while fresh
+  queries came out at norm ~5.3. vec0 ranks by L2, so those queries were ranked
+  largely by magnitude rather than meaning. Indexes now stamp
+  `backend = fastembed/<version>` into `meta` and treat a change as a mismatch.
+  A missing key means "pre-0.9.0, unknown" and does not trigger a surprise
+  re-embed — rebuild such tenants once with `reindex(full=True)` after clearing
+  `emb_cache`.
+- **`dist` on every search result.** The RRF `score` is a rank reciprocal capped
+  at `2/rrf_k`: across 616 logged recalls its entire range was 0.016-0.033,
+  identical for a correct hit and for gibberish. Results (and the query log's
+  `top_dist` / `dists`) now carry the raw vector distance — the only logged value
+  that tracks relevance. It is comparable only *within* one tenant+backend.
+- **`analyze` stops reporting two misleading numbers.** "avg top score" (an
+  average of rank reciprocals) is replaced by per-tenant `dist` p50/p90 plus a
+  **weakest-hits** list — each tenant's own worst decile, i.e. the queries that
+  returned something but probably not the right thing. "no-hit rate" is relabeled
+  "empty results" and annotated: a hybrid search returns the top-k of its
+  candidate pool, so it is ~always 0 and never meant "recall is healthy".
+- **`cogvault_record` validates `content`.** A missing or blank field raised
+  `KeyError` deep inside `_write_card`, surfacing as an opaque `-32000
+  "'content'"` — the agent believed it had saved a memory that was never
+  written (one silent loss on tenant-d). Now a `-32602` naming the field.
+- **Silenced fastembed's mean-pooling warning** after verifying (post-rebuild)
+  that stored and fresh vectors match exactly; it fired on every CLI call and
+  buried real output in subagent scrollback.
+
 ## 0.8.2 — 2026-07-28 — failure visibility & evergreen standing rules
 
 - **`error` events in the query log.** Until now the log recorded only what
