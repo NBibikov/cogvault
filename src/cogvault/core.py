@@ -219,8 +219,15 @@ def model_cache_dir() -> str:
     `NoSuchFile: [ONNXRuntimeError] Load model from /var/folders/...`. Four such
     failures (tenant-a, tenant-b) sat in the query log before this was
     pinned. Keep the weights next to the indexes, under a stable cache root."""
-    root = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
-    return os.environ.get("FASTEMBED_CACHE_PATH") or os.path.join(root, "fastembed")
+    # Deliberately NOT under $XDG_CACHE_HOME: that variable is redirected per
+    # test-run (and per sandbox) to isolate INDEXES, but model weights are a
+    # ~300 MB read-only download that must survive such redirection. Tying them
+    # together made every isolated run re-download the weights — three
+    # concurrent test processes then spent 25s+ each fetching the same files and
+    # blew the concurrency test's timeout. Indexes are cheap to rebuild and
+    # belong to a tenant; weights belong to the machine.
+    return (os.environ.get("FASTEMBED_CACHE_PATH")
+            or os.path.join(os.path.expanduser("~/.cache"), "fastembed"))
 
 
 def _embedder(model: str):
@@ -671,17 +678,28 @@ class Vault:
                 # between the phases; trust the locked view
                 known = {r[0]: r[1] for r in con.execute("SELECT path, mtime FROM files")}
             n_chunks = n_new = n_cache = n_files = 0
+            # Cards touched this run, for write-side telemetry. Collected here but
+            # logged only AFTER the COMMIT below: a rollback must not leave the
+            # query log claiming writes that never landed. Suppressed entirely on
+            # a full rebuild, where every file is "reindexed" and logging would
+            # report a 572-card tenant as 572 fresh memories.
+            touched: list[tuple[str, str, int]] = []   # (key, op, chunks)
             for key, (fp, mt) in disk.items():
                 if known.get(key) == mt:
                     continue                          # unchanged — skip entirely
+                is_new = key not in known
                 self._purge_file(con, key)            # stale rows out (no-op if new)
                 c, nw, cc = self._index_file(con, key, fp, ev_re, prepared.get(key))
                 con.execute("INSERT OR REPLACE INTO files(path,mtime) VALUES(?,?)", (key, mt))
                 n_chunks += c; n_new += nw; n_cache += cc; n_files += 1
+                if not full:
+                    touched.append((key, "create" if is_new else "update", c))
             for key in list(known):                   # files gone from disk
                 if key not in disk:
                     self._purge_file(con, key)
                     con.execute("DELETE FROM files WHERE path=?", (key,))
+                    if not full:
+                        touched.append((key, "delete", 0))
             con.execute("COMMIT")
         except Exception:
             if con.in_transaction:
@@ -689,6 +707,15 @@ class Vault:
             raise
         finally:
             con.close()
+        # Write-side telemetry for the file-first path. Most cards are NOT written
+        # through the MCP `cogvault_record` tool — agents (and the /remember skill)
+        # write markdown directly and then run `cogvault index`, so the log showed
+        # 616 recalls against 24 records and made active tenants look read-only.
+        # Logging from reindex captures those writes wherever they came from.
+        if touched:
+            from .obs import log_record
+            for key, op, nch in touched:
+                log_record(self.dir, key, "", op=op, chunks=nch)
         return {"files_total": len(disk), "files_reindexed": n_files,
                 "chunks": n_chunks, "embedded": n_new, "cached": n_cache}
 

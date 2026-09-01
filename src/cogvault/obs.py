@@ -90,13 +90,29 @@ def log_error(tenant: str, op: str, exc: BaseException, ts: float | None = None,
     })
 
 
-def log_record(tenant: str, file: str, content: str, ts: float | None = None):
+def log_record(tenant: str, file: str, content: str, ts: float | None = None,
+               op: str = "create", chunks: int | None = None):
     """Append one write event — `analyze` pairs these with recalls to show which
-    agents actually write memory vs only read it."""
+    agents actually write memory vs only read it.
+
+    Two callers, deliberately: the MCP `cogvault_record` tool (which has the card
+    text, hence `chars`), and `Vault.reindex()` (which does not, but sees every
+    card written directly to disk). The second path matters more in practice —
+    agents and the /remember skill write markdown files and then run
+    `cogvault index`, so before it existed the log showed 616 recalls against 24
+    records and reported busy tenants as read-only.
+
+    `op` distinguishes a brand-new card (`create`) from a revision of an existing
+    one (`update`) or a card removed from disk (`delete`), so "how many NEW facts
+    did this agent save" stays answerable even on tenants that rewrite a running
+    project_state.md every day.
+    """
     _append({
         "ts": round(ts if ts is not None else time.time(), 3),
         "event": "record",
         "tenant": tenant_label(tenant),
         "file": file,
+        "op": op,
+        **({"chunks": chunks} if chunks is not None else {}),
         "chars": len(content),
     })

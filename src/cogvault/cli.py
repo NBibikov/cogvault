@@ -190,9 +190,17 @@ def _analyze(a) -> int:
     for r in rows:
         by_tenant[r.get("tenant", "?")] = by_tenant.get(r.get("tenant", "?"), 0) + 1
 
+    # Count NEW cards per tenant, not every touch: tenants that rewrite a running
+    # project_state.md daily would otherwise drown out the signal ("how many facts
+    # did this agent actually save"). Updates/deletes are reported separately.
     writes_by_tenant: dict[str, int] = {}
+    ops: dict[str, int] = {}
     for r in wrows:
-        writes_by_tenant[r.get("tenant", "?")] = writes_by_tenant.get(r.get("tenant", "?"), 0) + 1
+        op = r.get("op", "create")       # pre-0.9.0 records had no op; all were creates
+        ops[op] = ops.get(op, 0) + 1
+        if op == "create":
+            t = r.get("tenant", "?")
+            writes_by_tenant[t] = writes_by_tenant.get(t, 0) + 1
 
     err_by_type: dict[str, int] = {}
     for r in erows:
@@ -214,6 +222,7 @@ def _analyze(a) -> int:
             "weak_hits": len(weak_queries),
             "by_tenant": by_tenant,
             "records": len(wrows), "records_by_tenant": writes_by_tenant,
+            "records_by_op": ops,
             "errors": len(erows),
             "errors_by_type": err_by_type}, indent=2))
         return 0
@@ -242,9 +251,13 @@ def _analyze(a) -> int:
               sorted(by_tenant.items(), key=lambda x: -x[1])))
     # Read-only tenants are the actionable half of this line: agents that never
     # record are accumulating unwritten lessons.
-    print(f"  records         {len(wrows)}" + ("  (" + ", ".join(
+    new_cards = ops.get("create", 0)
+    print(f"  new cards       {new_cards}" + ("  (" + ", ".join(
         f"{t}:{c}" for t, c in sorted(writes_by_tenant.items(), key=lambda x: -x[1])) + ")"
         if writes_by_tenant else ""))
+    if ops.get("update") or ops.get("delete"):
+        print(f"  card edits      {ops.get('update', 0)} updated, "
+              f"{ops.get('delete', 0)} deleted")
     # Failures rank above no-hits: a no-hit is a memory gap, an error is broken
     # plumbing, and a silently broken tenant looks exactly like a forgetful agent.
     if erows:

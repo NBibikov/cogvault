@@ -40,6 +40,26 @@ degrading for weeks**, and none of the existing metrics could show it.
   `KeyError` deep inside `_write_card`, surfacing as an opaque `-32000
   "'content'"` — the agent believed it had saved a memory that was never
   written (one silent loss on tenant-d). Now a `-32602` naming the field.
+- **Write-side telemetry now covers the path agents actually use.** `log_record`
+  fired only from the MCP `cogvault_record` tool, but almost nobody writes that
+  way: agents and the `/remember` skill write markdown files and then run
+  `cogvault index`. The log therefore showed 616 recalls against 24 records and
+  reported five busy tenants as read-only. `reindex()` — the one place that sees
+  both paths — now logs a `record` event per touched card with
+  `op` = `create` / `update` / `delete`. Three details keep the metric honest:
+  events are emitted only AFTER the COMMIT (a rollback must not claim writes
+  that never landed), a `full=True` re-embed logs nothing (otherwise a 572-card
+  tenant reports 572 fresh facts), and the MCP path no longer logs separately
+  (its own reindex covers it — logging both double-counted every tool write).
+  `analyze` splits `new cards` (creates, per tenant) from `card edits`, so a
+  tenant rewriting `project_state.md` daily can't drown out the real signal.
+- **Model weights no longer live under `$XDG_CACHE_HOME`.** That variable is
+  redirected per test run and per sandbox to isolate *indexes*; tying the ~300 MB
+  ONNX download to it made every isolated run re-fetch the weights. Three
+  concurrent test processes each spent 25s+ downloading the same files, which is
+  what had been intermittently blowing the concurrency test's timeout. Indexes
+  belong to a tenant, weights belong to the machine. Suite: 35s and flaky → 2.9s
+  stable.
 - **Silenced fastembed's mean-pooling warning** after verifying (post-rebuild)
   that stored and fresh vectors match exactly; it fired on every CLI call and
   buried real output in subagent scrollback.

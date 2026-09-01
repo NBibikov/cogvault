@@ -207,10 +207,14 @@ def test_query_log_written(tmpvault, monkeypatch):
     v = Vault(tmpvault); v.reindex()
     v.search("how to fix the worker", k=2)
     assert os.path.exists(logf)
-    rec = _json.loads(open(logf).readline())
-    for key in ("ts", "event", "tenant", "query", "n_results", "top_score", "latency_ms"):
+    # Select the recall event by TYPE, not by position: reindex() now logs a
+    # `record` line for every card it writes, so the recall is no longer line 1.
+    recs = [_json.loads(l) for l in open(logf)]
+    rec = [r for r in recs if r["event"] == "recall"][-1]
+    for key in ("ts", "event", "tenant", "query", "n_results", "top_score",
+                "top_dist", "latency_ms"):
         assert key in rec, f"log missing {key}"
-    assert rec["event"] == "recall" and rec["query"] == "how to fix the worker"
+    assert rec["query"] == "how to fix the worker"
 
 
 def test_logging_disabled(tmpvault, monkeypatch):
@@ -679,7 +683,12 @@ def test_record_event_logged(tmpvault, monkeypatch):
     recs = [json.loads(l) for l in open(logf)]
     rec = [r for r in recs if r["event"] == "record"][-1]
     assert rec["file"].startswith("card-")
-    assert rec["chars"] > 0
+    assert rec["op"] == "create"
+    # `chars` is 0 on this path by design: the record event is emitted by
+    # reindex(), which sees the file but not the card text the tool was handed.
+    # That is the tradeoff for capturing the far more common write-a-file-then-
+    # `cogvault index` path (the /remember skill) in the same counter.
+    assert rec["chunks"] >= 1
     assert rec["tenant"].count("/") == 1          # parent/basename label, not bare
 
 
@@ -798,3 +807,45 @@ def test_search_results_carry_vector_distance(tmpvault):
     res = v.search("how does the gateway route clients", k=1)
     assert res and res[0]["dist"] is not None
     assert res[0]["dist"] >= 0
+
+
+def test_reindex_logs_file_first_writes(tmpvault, monkeypatch):
+    """The /remember path — write markdown, then `cogvault index` — must show up
+    in the query log. Before 0.9.0 only the MCP tool logged, so the fleet read
+    616 recalls against 24 records and busy tenants looked read-only.
+    """
+    import json
+    logf = os.path.join(tmpvault, "qlog.jsonl")
+    monkeypatch.setenv("COGVAULT_LOG", logf)
+    _write(tmpvault, "a.md", "The deploy pipeline rolls back on a failed health check.")
+    v = Vault(tmpvault)
+    v.reindex()
+    _write(tmpvault, "a.md", "The deploy pipeline rolls back on a failed health check. Now with retries.")
+    _write(tmpvault, "b.md", "Credentials live in the keychain, never in a memory card.")
+    v.reindex()
+    os.remove(os.path.join(tmpvault, "a.md"))
+    v.reindex()
+    recs = [json.loads(l) for l in open(logf) if json.loads(l)["event"] == "record"]
+    by_op = {}
+    for r in recs:
+        by_op.setdefault(r["op"], []).append(r["file"])
+    assert sorted(by_op["create"]) == ["a.md", "b.md"]
+    assert by_op["update"] == ["a.md"]
+    assert by_op["delete"] == ["a.md"]
+
+
+def test_full_rebuild_does_not_log_records(tmpvault, monkeypatch):
+    """A full re-embed touches every file but creates no new memory. Logging it
+    would report a 572-card tenant as 572 fresh facts and destroy the metric."""
+    import json
+    logf = os.path.join(tmpvault, "qlog.jsonl")
+    monkeypatch.setenv("COGVAULT_LOG", logf)
+    for i in range(3):
+        _write(tmpvault, f"c{i}.md", f"Card {i} about distinct topic number {i}.")
+    v = Vault(tmpvault)
+    v.reindex()
+    before = sum(1 for l in open(logf) if json.loads(l)["event"] == "record")
+    assert before == 3
+    v.reindex(full=True)
+    after = sum(1 for l in open(logf) if json.loads(l)["event"] == "record")
+    assert after == before, "full rebuild must not log records"

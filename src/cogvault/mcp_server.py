@@ -7,7 +7,7 @@ Tools: cogvault_recall (hybrid search), cogvault_record (append a markdown card)
 from __future__ import annotations
 import sys, json, os, datetime
 from .core import Vault, Config
-from .obs import log_record, log_error
+from .obs import log_error
 from . import __version__
 
 PROTOCOL = "2024-11-05"
@@ -110,8 +110,11 @@ class MCPServer:
                             "cogvault_record requires a non-empty string 'content' "
                             "(the fact to remember); nothing was written.")
                     fp = _write_card(self.tenant_dir, content, args.get("title"))
+                    # reindex() logs the `record` event itself (it is the one
+                    # place that sees BOTH this tool and the far more common
+                    # write-a-file-then-`cogvault index` path). Logging here too
+                    # would double-count every MCP write.
                     self.vault.reindex()
-                    log_record(self.tenant_dir, os.path.basename(fp), content)
                     return self._ok(rid, {"content": [{"type": "text",
                             "text": json.dumps({"status": "ok", "file": os.path.basename(fp)})}]})
                 return self._err(rid, -32601, f"unknown tool {name}")
