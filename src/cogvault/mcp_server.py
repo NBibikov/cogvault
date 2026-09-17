@@ -13,26 +13,95 @@ from . import __version__
 PROTOCOL = "2024-11-05"
 
 
-def _write_card(tenant_dir: str, content: str, title: str | None = None) -> str:
-    """Append a memory as a real markdown file (source of truth). Cards carry
-    the same name/description frontmatter as hand-written ones, and filenames
-    never overwrite: same-second records get a numeric suffix."""
-    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    slug = (title or content[:40]).lower()
-    slug = "".join(c if c.isalnum() else "-" for c in slug).strip("-")[:50] or "card"
-    fp = os.path.join(tenant_dir, f"card-{ts}-{slug}.md")
+_TYPES = ("project", "feedback", "reference", "user")
+
+
+def _slugify(s: str, limit: int = 60) -> str:
+    """kebab-case slug from a title: lowercase, non-alphanumerics collapsed to a
+    single dash. Non-ASCII letters are kept (tenants write Ukrainian titles)."""
+    out, prev_dash = [], False
+    for c in s.lower().strip():
+        if c.isalnum():
+            out.append(c); prev_dash = False
+        elif not prev_dash:
+            out.append("-"); prev_dash = True
+    return "".join(out).strip("-")[:limit]
+
+
+def _write_card(tenant_dir: str, content: str, title: str | None = None,
+                card_type: str | None = None) -> str:
+    """Append a memory as a real markdown file (source of truth).
+
+    Two failure modes this function used to have, both of which silently
+    degraded tenants until someone audited them by hand:
+
+    1. Filenames were `card-<timestamp>-<40 chars of content>.md`. Those sort by
+       write time, collide with nothing, and tell a human nothing — and because
+       the convention everywhere else is `<type>_<slug>.md`, they were invisible
+       to anyone grepping the vault by topic. Now a card is named
+       `<type>_<slug>.md` from its title, falling back to a timestamp ONLY when
+       there is no usable title.
+    2. `content` that already carried frontmatter got a SECOND frontmatter block
+       wrapped around it, with the inner block's raw YAML quoted into the outer
+       `description:`. parse_frontmatter_type then read the outer block, so the
+       card's real type and name were lost. Now pre-formatted content is written
+       through untouched (its own frontmatter completed if incomplete).
+
+    Cards never overwrite: a name collision gets a numeric suffix."""
+    text = content.strip()
+    has_fm = text.startswith("---\n") or text.startswith("---\r\n")
+
+    if has_fm:
+        # Caller handed us a formatted card. Respect it: read its own name/type
+        # rather than wrapping a second block around it.
+        from .core import parse_frontmatter_name, parse_frontmatter_type, _FRONTMATTER_RE
+        name = parse_frontmatter_name(text) or _slugify(title or "") or None
+        ftype = parse_frontmatter_type(text) or (card_type or "").strip().lower() or None
+        m = _FRONTMATTER_RE.match(text)
+        block = m.group(0).split("---", 2)[1].strip("\n")
+        body = text[m.end():].lstrip("\n")
+        lines = [ln for ln in block.splitlines()]
+        if name and not any(ln.startswith("name:") for ln in lines):
+            lines.insert(0, f"name: {json.dumps(name, ensure_ascii=False)}")
+        if ftype and parse_frontmatter_type(text) is None:
+            lines.append("metadata:"); lines.append(f"  type: {ftype}")
+        out_text = "---\n" + "\n".join(lines) + "\n---\n\n" + body + "\n"
+    else:
+        name = _slugify(title) if title else ""
+        ftype = (card_type or "").strip().lower()
+        if ftype and ftype not in _TYPES:
+            ftype = ""
+        # A type prefix in the title ("project: X") is the type, not part of the name.
+        if not ftype:
+            for cand in _TYPES:
+                if name.startswith(cand + "-"):
+                    ftype, name = cand, name[len(cand) + 1:]
+                    break
+        display = " ".join((title or name.replace("-", " ")).split()) or "card"
+        desc = " ".join(content.split())[:150]
+        slug = f"{ftype}-{name}" if ftype and name else (name or "")
+        fm = [f"name: {json.dumps(slug or display, ensure_ascii=False)}",
+              f"description: {json.dumps(desc, ensure_ascii=False)}"]
+        if ftype:
+            fm += ["metadata:", f"  type: {ftype}"]
+        out_text = "---\n" + "\n".join(fm) + "\n---\n\n" + text + "\n"
+        name = slug or name
+
+    # Filename: <type>_<slug>.md, matching every hand-written card in the fleet.
+    stem = (name or "").replace("-", "_").strip("_")
+    if stem and ftype and not stem.startswith(ftype + "_"):
+        stem = f"{ftype}_{stem}"
+    if not stem:
+        # No title and no frontmatter name — nothing meaningful to name it after.
+        stem = "card_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    fp = os.path.join(tenant_dir, f"{stem}.md")
     n = 2
     while os.path.exists(fp):
-        fp = os.path.join(tenant_dir, f"card-{ts}-{slug}-{n}.md")
+        fp = os.path.join(tenant_dir, f"{stem}_{n}.md")
         n += 1
-    name = " ".join((title or slug.replace("-", " ")).split())
-    desc = " ".join(content.split())[:150]
-    # json.dumps → safely quoted YAML scalars (titles may contain quotes/colons)
-    body = (f"---\nname: {json.dumps(name, ensure_ascii=False)}\n"
-            f"description: {json.dumps(desc, ensure_ascii=False)}\n"
-            f"---\n\n{content}\n")
     with open(fp, "w", encoding="utf-8") as f:
-        f.write(body)
+        f.write(out_text)
     return fp
 
 
@@ -55,10 +124,17 @@ class MCPServer:
             },
             "cogvault_record": {
                 "description": "Save a fact to persistent memory as a Markdown card. "
-                               "It becomes searchable on the next recall.",
+                               "It becomes searchable on the next recall. Pass `type` "
+                               "so the card can be filtered on recall, and `title` so "
+                               "it gets a meaningful filename.",
                 "inputSchema": {"type": "object", "properties": {
                     "content": {"type": "string", "description": "The fact to remember"},
-                    "title": {"type": "string", "description": "Optional short title"}},
+                    "title": {"type": "string", "description":
+                              "Short title — becomes the card's name and filename"},
+                    "type": {"type": "string", "enum": list(_TYPES),
+                             "description": "Card type: project (ongoing work/decision), "
+                                            "feedback (a rule or correction), reference "
+                                            "(pointer to a resource), user (who the user is)"}},
                     "required": ["content"]},
             },
         }
@@ -109,7 +185,8 @@ class MCPServer:
                         return self._err(rid, -32602,
                             "cogvault_record requires a non-empty string 'content' "
                             "(the fact to remember); nothing was written.")
-                    fp = _write_card(self.tenant_dir, content, args.get("title"))
+                    fp = _write_card(self.tenant_dir, content, args.get("title"),
+                                     args.get("type"))
                     # reindex() logs the `record` event itself (it is the one
                     # place that sees BOTH this tool and the far more common
                     # write-a-file-then-`cogvault index` path). Logging here too

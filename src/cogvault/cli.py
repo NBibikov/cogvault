@@ -1,4 +1,4 @@
-"""cogvault CLI: index | search | mcp | stats | analyze."""
+"""cogvault CLI: index | search | mcp | stats | analyze | doctor."""
 from __future__ import annotations
 import argparse, json, os, sys, statistics
 from .core import Vault, Config
@@ -44,6 +44,10 @@ def main(argv=None):
 
     st = sub.add_parser("stats", help="Index stats")
     st.add_argument("--tenant", required=True)
+
+    dr = sub.add_parser("doctor", help="Check a tenant for integrity problems "
+                                        "that silently degrade recall")
+    add_common(dr); dr.add_argument("--json", action="store_true")
 
     an = sub.add_parser("analyze", help="Effectiveness report from the query log")
     an.add_argument("--tenant", help="Filter to one tenant (default: all)")
@@ -102,7 +106,50 @@ def main(argv=None):
         raise
 
 
+def _doctor(v, as_json: bool) -> int:
+    """Print a tenant's integrity report. Exit 1 when anything is wrong, so this
+    can gate a pre-commit hook or a fleet sweep."""
+    rep = v.diagnose()
+    if as_json:
+        print(json.dumps(rep, ensure_ascii=False, indent=2))
+        return 0 if rep["ok"] else 1
+
+    print(f"cogvault doctor: {rep['files']} cards in {rep['tenant']}")
+    if rep["ok"]:
+        print("  ✓ no problems found")
+        return 0
+
+    def _section(key, title, hint, fmt=lambda x: f"      {x}"):
+        rows = rep[key]
+        if not rows:
+            return
+        print(f"\n  {title}: {len(rows)}")
+        print(f"      {hint}")
+        for r in rows[:15]:
+            print(fmt(r))
+        if len(rows) > 15:
+            print(f"      … and {len(rows) - 15} more")
+
+    _section("no_frontmatter", "cards with no frontmatter",
+             "no name/description → recall relevance and [[links]] both suffer")
+    _section("untyped", "cards with no type",
+             "a `type` filter on recall will never match these")
+    _section("legacy_names", "timestamp filenames",
+             "written by cogvault < 0.9.1; rename to <type>_<slug>.md")
+    _section("nested_frontmatter", "frontmatter inside frontmatter",
+             "a formatted card got wrapped again — the inner name/type is lost")
+    _section("duplicate_names", "duplicate name: slugs",
+             "a [[link]] can only reach one of them",
+             lambda r: f"      {r['name']}: {', '.join(r['files'])}")
+    _section("ghost_links", "links pointing at nothing",
+             "either the card was never written, or the slug is misspelled",
+             lambda r: f"      {r['file']} → [[{r['target']}]]")
+    return 1
+
+
 def _run(a, v, cfg) -> int:
+    if a.cmd == "doctor":
+        return _doctor(v, a.json)
     if a.cmd == "index":
         print(json.dumps(v.reindex()))
     elif a.cmd == "search":

@@ -682,7 +682,9 @@ def test_record_event_logged(tmpvault, monkeypatch):
     assert "error" not in resp
     recs = [json.loads(l) for l in open(logf)]
     rec = [r for r in recs if r["event"] == "record"][-1]
-    assert rec["file"].startswith("card-")
+    # Named after the title, not a timestamp (0.9.1) — the log must point at a
+    # file a human can find in the vault.
+    assert rec["file"] == "deploy_staging_flag.md"
     assert rec["op"] == "create"
     # `chars` is 0 on this path by design: the record event is emitted by
     # reindex(), which sees the file but not the card text the tool was handed.
@@ -849,3 +851,171 @@ def test_full_rebuild_does_not_log_records(tmpvault, monkeypatch):
     v.reindex(full=True)
     after = sum(1 for l in open(logf) if json.loads(l)["event"] == "record")
     assert after == before, "full rebuild must not log records"
+
+
+# ---------------------------------------------------------------------------
+# Data-loss regressions (0.9.1). Each of these was found by hand-auditing a
+# real tenant, after the loss had already been silently accumulating.
+# ---------------------------------------------------------------------------
+
+def test_wikilinks_resolve_by_frontmatter_name(tmpvault):
+    """Cards are FILED as project_foo_bar.md but DECLARE name: project-foo-bar,
+    and that declared slug is what [[links]] target. Resolving by filename only
+    found 1 link in 3 on a real tenant — two thirds of the memory graph was
+    invisible to recall's "Related:" line."""
+    _write(tmpvault, "project_course_worker.md",
+           "---\nname: project-course-worker\nmetadata:\n  type: project\n---\n"
+           "The nightly worker generates lessons.")
+    _write(tmpvault, "feedback_deploy_rules.md",
+           "---\nname: feedback-deploy-rules\nmetadata:\n  type: feedback\n---\n"
+           "Deploy goes to prod. See [[project-course-worker]] for the worker.")
+    v = Vault(tmpvault, Config())
+    v.reindex()
+    con = v._connect()
+    assert v._related(con, "feedback_deploy_rules.md") == ["project_course_worker.md"]
+
+
+def test_wikilinks_resolve_across_separator_styles(tmpvault):
+    """[[a-b]] and [[a_b]] must reach the same card: cards are written with
+    underscores, linked with dashes, and agents mix the two."""
+    _write(tmpvault, "project_alpha_beta.md",
+           "---\nname: project-alpha-beta\nmetadata:\n  type: project\n---\nAlpha body.")
+    _write(tmpvault, "src.md", "See [[project_alpha_beta]] and [[project-alpha-beta]].")
+    v = Vault(tmpvault, Config())
+    v.reindex()
+    con = v._connect()
+    assert v._related(con, "src.md") == ["project_alpha_beta.md"]
+
+
+def test_ghost_links_are_dropped_not_guessed(tmpvault):
+    """A link to a card that does not exist must resolve to nothing — never to
+    a near-miss. A wrong "Related:" is worse than an empty one."""
+    _write(tmpvault, "a.md", "---\nname: card-a\n---\nSee [[card-that-never-existed]].")
+    v = Vault(tmpvault, Config())
+    v.reindex()
+    con = v._connect()
+    assert v._related(con, "a.md") == []
+
+
+def test_name_survives_reindex_of_unrelated_file(tmpvault):
+    """Regression: the name was briefly threaded through an instance attribute,
+    so indexing file B could stamp B's name onto A's row (or None onto both)."""
+    _write(tmpvault, "project_one.md", "---\nname: project-one\n---\nOne.")
+    _write(tmpvault, "project_two.md", "---\nname: project-two\n---\nTwo.")
+    v = Vault(tmpvault, Config())
+    v.reindex()
+    con = v._connect()
+    rows = dict(con.execute("SELECT path, name FROM files"))
+    assert rows["project_one.md"] == "project-one"
+    assert rows["project_two.md"] == "project-two"
+    # touch only one file; the other's name must be untouched
+    time.sleep(0.01)
+    _write(tmpvault, "project_two.md", "---\nname: project-two\n---\nTwo, edited.")
+    v.reindex()
+    rows = dict(con.execute("SELECT path, name FROM files"))
+    assert rows["project_one.md"] == "project-one"
+    assert rows["project_two.md"] == "project-two"
+
+
+def test_archived_subdir_is_indexed_when_recursive(tmpvault):
+    """Moving an old log to archive/ is tidying, not deletion. In flat mode the
+    move silently dropped it from the index; recursive keeps it searchable."""
+    os.makedirs(os.path.join(tmpvault, "archive"))
+    _write(tmpvault, os.path.join("archive", "2026-01-01.md"),
+           "The ES256 signature fix landed on eight edge functions.")
+    v = Vault(tmpvault, Config(recursive=True))
+    v.reindex()
+    assert v.search("ES256 signature edge functions", k=3), "archived log unrecallable"
+
+
+def test_doctor_flags_real_problems_only(tmpvault):
+    """doctor must stay quiet on a healthy tenant — including dated session logs,
+    which carry no frontmatter BY DESIGN and must not be reported as defects."""
+    _write(tmpvault, "project_good.md",
+           "---\nname: project-good\ndescription: d\nmetadata:\n  type: project\n---\nBody.")
+    _write(tmpvault, "2026-01-01.md", "# 2026-01-01\n\nSession narrative, no frontmatter.")
+    v = Vault(tmpvault, Config())
+    v.reindex()
+    rep = v.diagnose()
+    assert rep["ok"], rep
+    assert rep["no_frontmatter"] == [] and rep["untyped"] == []
+
+    # now introduce each defect and confirm it is caught
+    _write(tmpvault, "project_untyped.md", "---\nname: project-untyped\n---\nNo type.")
+    _write(tmpvault, "card-20260101-120000-legacy.md", "---\nname: legacy\n---\nOld shape.")
+    _write(tmpvault, "project_dup.md",
+           "---\nname: project-good\nmetadata:\n  type: project\n---\nSame slug!")
+    _write(tmpvault, "project_ghost.md",
+           "---\nname: project-ghost\nmetadata:\n  type: project\n---\n[[nope-not-here]]")
+    v.reindex()
+    rep = v.diagnose()
+    assert not rep["ok"]
+    assert "project_untyped.md" in rep["untyped"]
+    assert "card-20260101-120000-legacy.md" in rep["legacy_names"]
+    assert any(d["name"] == "project-good" for d in rep["duplicate_names"])
+    assert any(g["target"] == "nope-not-here" for g in rep["ghost_links"])
+
+
+def test_write_card_names_by_slug_not_timestamp(tmpvault):
+    """Cards used to land as card-<timestamp>-<40 chars of body>.md — sorted by
+    write time, unreadable, and invisible to anyone grepping the vault by topic."""
+    from cogvault.mcp_server import _write_card
+    fp = _write_card(tmpvault, "Deploys always go to prod via main.",
+                     "Deploy means prod", "feedback")
+    assert os.path.basename(fp) == "feedback_deploy_means_prod.md"
+    text = open(fp).read()
+    from cogvault.core import parse_frontmatter_type, parse_frontmatter_name
+    assert parse_frontmatter_type(text) == "feedback"
+    assert parse_frontmatter_name(text) == "feedback-deploy-means-prod"
+
+
+def test_write_card_does_not_nest_frontmatter(tmpvault):
+    """Content that ALREADY carries frontmatter got a second block wrapped around
+    it, with the inner YAML quoted into the outer description:. The card's real
+    type and name were then unreadable — one such card sat broken for weeks."""
+    from cogvault.mcp_server import _write_card
+    from cogvault.core import parse_frontmatter_type, parse_frontmatter_name
+    pre = ("---\nname: project-already-formatted\n"
+           "description: a real description\nmetadata:\n  type: project\n---\n\nThe body.\n")
+    fp = _write_card(tmpvault, pre, "some title the caller also passed")
+    text = open(fp).read()
+    assert text.count("---\n") == 2, f"frontmatter nested:\n{text}"
+    assert parse_frontmatter_name(text) == "project-already-formatted"
+    assert parse_frontmatter_type(text) == "project"
+    assert os.path.basename(fp) == "project_already_formatted.md"
+
+
+def test_write_card_never_overwrites(tmpvault):
+    """Two cards with the same title must both survive — one silently replacing
+    the other is exactly the data loss this whole pass is about."""
+    from cogvault.mcp_server import _write_card
+    a = _write_card(tmpvault, "First fact.", "Same title", "project")
+    b = _write_card(tmpvault, "Second, different fact.", "Same title", "project")
+    assert a != b
+    assert open(a).read() != open(b).read()
+    assert "First fact." in open(a).read() and "Second, different fact." in open(b).read()
+
+
+def test_write_card_falls_back_when_untitled(tmpvault):
+    """No title and no frontmatter: there is nothing meaningful to name it after,
+    so a timestamp is correct here — but it must still be a valid card."""
+    from cogvault.mcp_server import _write_card
+    fp = _write_card(tmpvault, "An orphan fact with no title at all.")
+    assert os.path.basename(fp).startswith("card_")
+    assert "An orphan fact" in open(fp).read()
+
+
+def test_write_card_then_recall_roundtrip(tmpvault):
+    """End to end: a card written through the MCP path must be findable, typed,
+    and reachable by a [[link]] from another card."""
+    from cogvault.mcp_server import _write_card
+    _write_card(tmpvault, "The nightly worker throttles at 180 lessons a day.",
+                "Course worker throughput", "project")
+    _write(tmpvault, "other.md",
+           "---\nname: other\n---\nSee [[project-course-worker-throughput]].")
+    v = Vault(tmpvault, Config())
+    v.reindex()
+    hits = v.search("worker throttles lessons per day", k=3, card_type="project")
+    assert hits, "card written via MCP is not recallable"
+    con = v._connect()
+    assert v._related(con, "other.md") == ["project_course_worker_throughput.md"]

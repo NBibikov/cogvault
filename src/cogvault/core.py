@@ -20,7 +20,7 @@ import sqlite_vec
 # no query/passage prefixes required. Override via Config.model for English-only fleets.
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # 384-d
 DIM = 384
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # Index lives OUTSIDE the tenant's markdown dir by default, so it can never be
 # accidentally git-committed next to the source files. Override via Config.db_dir.
 DEFAULT_DB_DIR = os.path.join(
@@ -320,6 +320,29 @@ def parse_frontmatter_type(text: str) -> str | None:
 
 
 # [[slug]], [[slug|alias]], [[slug#section]] — capture the slug only.
+def parse_frontmatter_name(text: str) -> str | None:
+    """Extract the card's declared `name:` slug from leading YAML frontmatter.
+
+    Memory cards are linked by this slug ([[card-name]]), which by convention
+    differs from the filename (`project_foo_bar.md` declares
+    `name: project-foo-bar`). Resolving links by filename alone dropped 2 of
+    every 3 links on a real tenant, so the graph the recall "Related:" line is
+    built from was mostly invisible. Same minimal-parser philosophy as
+    parse_frontmatter_type: no YAML dependency, tolerant of quotes."""
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return None
+    block = m.group(0).split("---", 2)[1]
+    for line in block.splitlines():
+        if line[:1] in (" ", "\t") or not line.strip():
+            continue
+        key, sep, val = line.partition(":")
+        if sep and key.strip() == "name":
+            v = val.strip().strip("\"'").strip()
+            return v or None
+    return None
+
+
 _WIKILINK_RE = re.compile(r"\[\[([^\]\[|#\n]+)")
 
 def parse_wikilinks(text: str) -> list[str]:
@@ -452,7 +475,8 @@ class Vault:
                 UNIQUE(path, hash));
             CREATE INDEX IF NOT EXISTS idx_chunks_cid ON chunks(cid);
             CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(type);
-            CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, mtime REAL);
+            CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, mtime REAL,
+                name TEXT);   -- frontmatter `name:` slug; [[links]] target it
             CREATE TABLE IF NOT EXISTS emb_cache(
                 hash TEXT, model TEXT, vec BLOB, PRIMARY KEY(hash, model));
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -461,6 +485,7 @@ class Vault:
                 target   TEXT NOT NULL,            -- [[slug]] as written, no .md
                 UNIQUE(src_path, target));
             CREATE INDEX IF NOT EXISTS idx_links_src ON links(src_path);
+            CREATE INDEX IF NOT EXISTS idx_files_name ON files(name);
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                 chunk_id INTEGER PRIMARY KEY, embedding FLOAT[{self.cfg.dim}]);
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
@@ -507,6 +532,13 @@ class Vault:
                 src_path TEXT NOT NULL, target TEXT NOT NULL,
                 UNIQUE(src_path, target))""")
             con.execute("CREATE INDEX IF NOT EXISTS idx_links_src ON links(src_path)")
+            fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
+            if "name" not in fcols:
+                # v3: cards are linked by their frontmatter `name:` slug, which by
+                # convention differs from the filename. Without it _related()
+                # resolved only 1 link in 3 on a real tenant.
+                con.execute("ALTER TABLE files ADD COLUMN name TEXT")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
             con.execute("UPDATE files SET mtime = -1")  # force cheap backfill, keep keys
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema',?)",
                         (str(SCHEMA_VERSION),))
@@ -568,15 +600,16 @@ class Vault:
         con.execute("DELETE FROM chunks WHERE path=?", (base,))
         con.execute("DELETE FROM links WHERE src_path=?", (base,))
 
-    def _prepare_file(self, con, fp: str) -> tuple[str | None, list[str], list[tuple]]:
+    def _prepare_file(self, con, fp: str) -> tuple[str | None, str | None, list[str], list[tuple]]:
         """Chunk a file and resolve each chunk's vector (emb_cache hit or fresh
-        embed) → (card_type, wikilinks, [(chunk, hash, blob, from_cache)]).
+        embed) → (card_type, card_name, wikilinks, [(chunk, hash, blob, from_cache)]).
         Type and links are parsed from the RAW text (before the optional
         frontmatter strip — the type lives IN the frontmatter). Read-only: called
         OUTSIDE the write transaction, so embedding (the slow part) never holds
         the write lock and concurrent searches aren't starved during a big reindex."""
         text = open(fp, encoding="utf-8", errors="ignore").read()
         ftype = parse_frontmatter_type(text)
+        fname = parse_frontmatter_name(text)
         links = parse_wikilinks(text)
         if self.cfg.strip_frontmatter:
             text = strip_frontmatter(text)
@@ -589,15 +622,15 @@ class Vault:
                 out.append((ch, h, cached[0], True))
             else:
                 out.append((ch, h, _pack(embed([ch], self.cfg.model)[0]), False))
-        return ftype, links, out
+        return ftype, fname, links, out
 
     def _index_file(self, con, key: str, fp: str, ev_re,
-                    prepared: list | None = None) -> tuple[int, int, int]:
+                    prepared: list | None = None) -> tuple[int, int, int, str | None]:
         evergreen = 1 if ev_re.match(os.path.basename(key)) else 0
         age = _file_age_days(fp)
         if prepared is None:           # race fallback: file entered scope inside the txn
             prepared = self._prepare_file(con, fp)
-        ftype, links, rows = prepared
+        ftype, fname, links, rows = prepared
         n_chunks = n_new = n_cache = 0
         for ch, h, blob, from_cache in rows:
             stable = _sha(f"{key}\0{h}")           # deterministic, reindex-stable id
@@ -619,7 +652,7 @@ class Vault:
         if links:
             con.executemany("INSERT OR IGNORE INTO links(src_path,target) VALUES(?,?)",
                             [(key, t) for t in links])
-        return n_chunks, n_new, n_cache
+        return n_chunks, n_new, n_cache, fname
 
     # ---- incremental indexing (fleet-safe: only touches changed files) ----
     def reindex(self, full: bool = False) -> dict:
@@ -689,8 +722,9 @@ class Vault:
                     continue                          # unchanged — skip entirely
                 is_new = key not in known
                 self._purge_file(con, key)            # stale rows out (no-op if new)
-                c, nw, cc = self._index_file(con, key, fp, ev_re, prepared.get(key))
-                con.execute("INSERT OR REPLACE INTO files(path,mtime) VALUES(?,?)", (key, mt))
+                c, nw, cc, fname = self._index_file(con, key, fp, ev_re, prepared.get(key))
+                con.execute("INSERT OR REPLACE INTO files(path,mtime,name) VALUES(?,?,?)",
+                            (key, mt, fname))
                 n_chunks += c; n_new += nw; n_cache += cc; n_files += 1
                 if not full:
                     touched.append((key, "create" if is_new else "update", c))
@@ -871,19 +905,91 @@ class Vault:
 
     def _related(self, con, src_key: str, cap: int = 8) -> list[str]:
         """Resolve the [[wiki-links]] of one indexed file to card filenames that
-        actually exist in the index (exact stem match; ghost links are dropped).
-        Names only — the caller decides whether to fetch more."""
+        actually exist in the index. Ghost links (no such card) are dropped.
+
+        A link resolves three ways, in order: the card's declared frontmatter
+        `name:` slug, the filename stem, and finally either of those with `-`/`_`
+        interchanged. Cards are written `project_foo_bar.md` but declare
+        `name: project-foo-bar` and are linked as `[[project-foo-bar]]`, so
+        filename-only matching found just 1 link in 3 on a real tenant — two
+        thirds of the memory graph was invisible to recall."""
         out: list[str] = []
         for (target,) in con.execute(
                 "SELECT DISTINCT target FROM links WHERE src_path=?", (src_key,)):
-            row = con.execute(
-                "SELECT path FROM files WHERE path = ? OR path LIKE ? LIMIT 1",
-                (f"{target}.md", f"%{os.sep}{target}.md")).fetchone()
-            if row:
+            row = None
+            # Separator-insensitive: try the slug as written, then swapped.
+            for cand in (target, target.replace("-", "_"), target.replace("_", "-")):
+                row = con.execute(
+                    "SELECT path FROM files WHERE name = ? OR path = ? OR path LIKE ? "
+                    "ORDER BY (name = ?) DESC LIMIT 1",
+                    (cand, f"{cand}.md", f"%{os.sep}{cand}.md", cand)).fetchone()
+                if row:
+                    break
+            if row and row[0] not in out:
                 out.append(row[0])
                 if len(out) >= cap:
                     break
         return out
+
+    def diagnose(self) -> dict:
+        """Report integrity problems that silently degrade recall.
+
+        Every check here comes from a real loss found by hand-auditing a tenant:
+        cards the index cannot type, links that point at nothing, cards written
+        by an old MCP server under a timestamp filename, frontmatter nested
+        inside frontmatter, and duplicate `name:` slugs (where a [[link]] can
+        only ever reach one of them). Read-only — it never edits a card."""
+        import collections
+        con = self._connect()
+        files = {key: fp for key, fp in self._iter_files()}
+        report = {"tenant": self.dir, "files": len(files), "untyped": [],
+                  "ghost_links": [], "legacy_names": [], "nested_frontmatter": [],
+                  "duplicate_names": [], "no_frontmatter": []}
+
+        names: dict[str, list[str]] = collections.defaultdict(list)
+        resolvable: set[str] = set()
+        for key, fp in sorted(files.items()):
+            text = open(fp, encoding="utf-8", errors="ignore").read()
+            base = os.path.basename(key)
+            stem = base[:-3]
+            nm = parse_frontmatter_name(text)
+            if nm:
+                names[nm].append(key)
+                resolvable |= {nm, nm.replace("-", "_"), nm.replace("_", "-")}
+            # basename, not the relative key: a link to an archived log
+            # ([[2026-06-11]] → archive/2026-06-11.md) still resolves.
+            resolvable |= {stem, stem.replace("-", "_"), stem.replace("_", "-")}
+
+            # Dated files (YYYY-MM-DD.md) are session logs, not cards: they are
+            # narrative by design and carry no frontmatter. Flagging them would
+            # make doctor cry wolf on a healthy tenant.
+            is_log = bool(re.match(r"\d{4}-\d{2}-\d{2}$", stem))
+            if not is_log:
+                if not _FRONTMATTER_RE.match(text):
+                    report["no_frontmatter"].append(key)
+                elif parse_frontmatter_type(text) is None:
+                    report["untyped"].append(key)
+            # A description whose value starts a second YAML block = the writer
+            # wrapped an already-formatted card instead of passing it through.
+            m = _FRONTMATTER_RE.match(text)
+            if m and '"---' in m.group(0):
+                report["nested_frontmatter"].append(key)
+            if base.startswith("card-") or base.startswith("card_"):
+                report["legacy_names"].append(key)
+
+        for key, fp in sorted(files.items()):
+            text = open(fp, encoding="utf-8", errors="ignore").read()
+            for tgt in parse_wikilinks(text):
+                if not ({tgt, tgt.replace("-", "_"), tgt.replace("_", "-")} & resolvable):
+                    report["ghost_links"].append({"file": key, "target": tgt})
+
+        report["duplicate_names"] = [{"name": n, "files": fs}
+                                     for n, fs in sorted(names.items()) if len(fs) > 1]
+        report["ok"] = not any(report[k] for k in
+                               ("untyped", "ghost_links", "legacy_names",
+                                "nested_frontmatter", "duplicate_names", "no_frontmatter"))
+        con.close()
+        return report
 
     def _mmr(self, con, ranked: list[int], k: int) -> list[int]:
         if self.cfg.mmr_lambda >= 1.0 or len(ranked) <= k:
