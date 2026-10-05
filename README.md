@@ -1,16 +1,18 @@
+<!-- mcp-name: io.github.NBibikov/cogvault -->
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.svg">
-  <img alt="cogvault — fleet-grade local memory for AI agents, over plain Markdown you own" src="assets/hero-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/hero-dark.svg">
+  <img alt="cogvault — fleet-grade local memory for AI agents, over plain Markdown you own" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/hero-light.svg">
 </picture>
 
 <br>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-f5b041.svg?style=flat-square)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-f5b041.svg?style=flat-square)](https://github.com/NBibikov/cogvault/blob/main/LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-4f46e5.svg?style=flat-square)](https://www.python.org)
 [![MCP](https://img.shields.io/badge/MCP-stdio-312e81.svg?style=flat-square)](https://modelcontextprotocol.io)
-[![Release](https://img.shields.io/github/v/release/NBibikov/cogvault?style=flat-square&color=0d9488)](https://github.com/NBibikov/cogvault/releases)
+[![PyPI](https://img.shields.io/pypi/v/cogvault?style=flat-square&color=0d9488)](https://pypi.org/project/cogvault/)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.NBibikov%2Fcogvault-312e81?style=flat-square)](https://registry.modelcontextprotocol.io/?search=cogvault)
 
 **[Why](#why)** · **[How it works](#how-it-works)** · **[Benchmark](#benchmark)** · **[Install](#install)** · **[Quickstart](#quickstart)** · **[MCP](#as-an-mcp-server-claude-code-cursor-any-mcp-client)** · **[Fleets](#multi-tenant-fleets)**
 
@@ -41,15 +43,15 @@ the wrong trade.
 ## How it works
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-  <img alt="Markdown files are indexed into a derived SQLite database (vectors + FTS5) and recalled through MCP, CLI or Python" src="assets/architecture-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/architecture-dark.svg">
+  <img alt="Markdown files are indexed into a derived SQLite database (vectors + FTS5) and recalled through MCP, CLI or Python" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/architecture-light.svg">
 </picture>
 
 ### Anatomy of a recall
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/recall-dark.svg">
-  <img alt="A query runs through a semantic and a keyword ranker, fused with RRF, then temporal decay, MMR and one-hit-per-card" src="assets/recall-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/recall-dark.svg">
+  <img alt="A query runs through a semantic and a keyword ranker, fused with RRF, then temporal decay, MMR and one-hit-per-card" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/recall-light.svg">
 </picture>
 
 Hybrid retrieval fuses semantic (vector) and keyword (BM25/FTS5) ranking with
@@ -61,8 +63,8 @@ best chunk, so one long file can't fill the whole result list.
 ## Benchmark
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
-  <img alt="Bar chart, 65 real agent queries: e5-small with summary chunk hit@1 0.57, hit@5 0.91, MRR 0.70; MiniLM default hit@5 0.80; bge-small-en hit@5 0.77" src="assets/benchmark-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/benchmark-dark.svg">
+  <img alt="Bar chart, 65 real agent queries: e5-small with summary chunk hit@1 0.57, hit@5 0.91, MRR 0.70; MiniLM default hit@5 0.80; bge-small-en hit@5 0.77" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/benchmark-light.svg">
 </picture>
 
 Measured on **real** recall traffic, not synthetic questions: 66 queries sampled from the
@@ -87,7 +89,7 @@ What the numbers do and don't say:
   for 91% of queries vs. 80% for the default MiniLM and 77% for English-only bge on this
   mixed-language memory. That's what an agent reading 5 results actually feels.
 - **65 queries is still a small sample.** Treat differences under ~0.1 as noise. The
-  aggregate numbers are in [`assets/benchmark.json`](assets/benchmark.json); the queries
+  aggregate numbers are in [`assets/benchmark.json`](https://github.com/NBibikov/cogvault/blob/main/assets/benchmark.json); the queries
   are private and stay in each tenant.
 
 Run the same check on your own memory: put judged queries in
@@ -131,15 +133,24 @@ Precedence: explicit `--model` / `$COGVAULT_MODEL` > `.cogvault.toml` > built-in
 
 ## Install
 
-Not on PyPI yet — install from GitHub (a tagged release, or `main`):
-
 ```bash
-uv tool install git+https://github.com/NBibikov/cogvault@v0.11.0   # CLI on PATH
+uv tool install cogvault        # CLI on PATH
 # or
-pip install git+https://github.com/NBibikov/cogvault@v0.11.0
+pip install cogvault
 ```
 
-Release wheels are also attached to each [GitHub release](https://github.com/NBibikov/cogvault/releases).
+Or skip installing and run it on demand with `uvx cogvault …`. The first run downloads
+the embedding model (~0.2–0.5 GB, once per machine).
+
+**Add it to Claude Code as an MCP server in one line:**
+
+```bash
+claude mcp add cogvault -- uvx cogvault mcp --tenant ~/agent/memory
+```
+
+Also listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/?search=cogvault)
+as `io.github.NBibikov/cogvault`. Wheels are attached to each
+[GitHub release](https://github.com/NBibikov/cogvault/releases).
 
 ## Quickstart
 
@@ -173,7 +184,7 @@ plain files index fine):
 ### As an MCP server (Claude Code, Cursor, any MCP client)
 
 ```bash
-claude mcp add cogvault -- cogvault mcp --tenant ~/agent/memory
+claude mcp add cogvault -- uvx cogvault mcp --tenant ~/agent/memory
 ```
 
 Exposes two tools:
@@ -255,8 +266,8 @@ the test suite (`test_multi_tenant_isolation`). Agent B can never recall Agent A
 memory unless you point B at A's directory.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/fleet-dark.svg">
-  <img alt="Four agents, each pointed at its own memory directory with its own index; tenants are isolated" src="assets/fleet-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/fleet-dark.svg">
+  <img alt="Four agents, each pointed at its own memory directory with its own index; tenants are isolated" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/fleet-light.svg">
 </picture>
 
 ## Design notes
@@ -280,6 +291,6 @@ memory unless you point B at A's directory.
 
 ## License
 
-[MIT](LICENSE) — your memory, your files, your infrastructure. Forever.
+[MIT](https://github.com/NBibikov/cogvault/blob/main/LICENSE) — your memory, your files, your infrastructure. Forever.
 
-<sub>Figures are hand-built SVG from [`assets/make_graphics.py`](assets/make_graphics.py) — `python assets/make_graphics.py --png` regenerates them.</sub>
+<sub>Figures are hand-built SVG from [`assets/make_graphics.py`](https://github.com/NBibikov/cogvault/blob/main/assets/make_graphics.py) — `python assets/make_graphics.py --png` regenerates them.</sub>

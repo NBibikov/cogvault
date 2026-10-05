@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.1 — 2026-10-05 — on PyPI and the MCP Registry
+
+- **Published to PyPI** (`pip install cogvault`, `uvx cogvault mcp --tenant DIR`) and
+  listed in the official MCP Registry as `io.github.NBibikov/cogvault` (`server.json`).
+- Releases are built, tested and published by `.github/workflows/publish.yml` on a
+  `v*` tag: PyPI via trusted publishing (no stored token), the registry via GitHub OIDC.
+- README images and links are absolute, so the PyPI project page renders them.
+- No code changes.
+
 ## 0.11.0 — 2026-10-05 — judged on real queries
 
 - **`cogvault eval`** scores recall against `<tenant>/.cogvault-golden.jsonl`

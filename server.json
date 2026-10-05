@@ -1,0 +1,61 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.NBibikov/cogvault",
+  "title": "cogvault",
+  "description": "Local hybrid-search memory for AI agents over plain Markdown. Multi-tenant, offline, no LLM.",
+  "websiteUrl": "https://github.com/NBibikov/cogvault",
+  "repository": {
+    "url": "https://github.com/NBibikov/cogvault",
+    "source": "github"
+  },
+  "version": "0.11.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "cogvault",
+      "version": "0.11.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp",
+          "valueHint": "command"
+        },
+        {
+          "type": "named",
+          "name": "--tenant",
+          "isRequired": true,
+          "format": "filepath",
+          "description": "Directory of Markdown memory cards for this agent (one directory = one isolated tenant)",
+          "placeholder": "~/agent/memory"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "COGVAULT_MODEL",
+          "isRequired": false,
+          "format": "string",
+          "description": "Embedding model override; otherwise .cogvault.toml in the tenant, then the multilingual default"
+        },
+        {
+          "name": "COGVAULT_LOG",
+          "isRequired": false,
+          "format": "string",
+          "description": "Recall log: 'off' to disable, or a path to relocate the JSONL log"
+        }
+      ]
+    }
+  ],
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/logo.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "512x512"
+      ]
+    }
+  ]
+}
