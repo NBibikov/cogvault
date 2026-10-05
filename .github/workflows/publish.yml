@@ -35,7 +35,11 @@ jobs:
           SRV=$(jq -r .version server.json)
           SRV_PKG=$(jq -r '.packages[0].version' server.json)
           echo "pyproject=$PKG server.json=$SRV/$SRV_PKG ref=$GITHUB_REF_NAME"
-          test "$PKG" = "$SRV" && test "$PKG" = "$SRV_PKG"
+          PLUG=$(jq -r .version plugin/.claude-plugin/plugin.json)
+          echo "plugin.json=$PLUG"
+          test "$PKG" = "$SRV" && test "$PKG" = "$SRV_PKG" && test "$PKG" = "$PLUG"
+          # the plugin directory requires an exact pin on the uvx launcher
+          grep -q "\"cogvault==$PKG\"" plugin/.mcp.json
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then test "v$PKG" = "$GITHUB_REF_NAME"; fi
       - run: uv build
       - run: uvx twine check --strict dist/*

@@ -437,6 +437,20 @@ def benchmark():
     return frame(W, H, "\n".join(b))
 
 
+# ------------------------------------------------------------------ icon -----
+def icon():
+    """Square app icon (plugin directory, avatars): the mark alone, no text."""
+    W = 1024
+    b = [f'<rect width="{W}" height="{W}" rx="220" fill="url(#bg)"/>',
+         f'<rect width="{W}" height="{W}" rx="220" fill="url(#dots)" mask="url(#dotmask)" opacity="0.6"/>',
+         mark(W / 2, W / 2, 600, animate=False)]
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{W}" viewBox="0 0 {W} {W}">
+{defs()}
+<style></style>
+{chr(10).join(b)}
+</svg>"""
+
+
 # ------------------------------------------------------------------ build ----
 FIGURES = {"hero": hero, "demo": demo, "architecture": architecture, "recall": recall, "fleet": fleet, "benchmark": benchmark}
 
@@ -466,14 +480,30 @@ justify-content:center;background:linear-gradient(135deg,{THEMES['dark']['bg0']}
                    check=True, capture_output=True)
 
 
+def icon_png():
+    """1024x1024 PNG of the icon, for the Claude Code plugin directory."""
+    chrome = shutil.which("google-chrome") or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    svg = open(os.path.join(OUT, "icon.svg")).read()
+    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as f:
+        f.write(f'<html><body style="margin:0;background:transparent">{svg}</body></html>')
+    out = os.path.join(OUT, "..", "plugin", ".claude-plugin", "icon.png")
+    subprocess.run([chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+                    "--default-background-color=00000000", "--force-device-scale-factor=1",
+                    "--window-size=1024,1024", f"--screenshot={os.path.abspath(out)}",
+                    f"file://{f.name}"], check=True, capture_output=True)
+
+
 def main():
     for name, fn in FIGURES.items():
         svg = fn()
         for theme in THEMES:
             with open(os.path.join(OUT, f"{name}-{theme}.svg"), "w") as f:
                 f.write(render(svg, theme))
+    with open(os.path.join(OUT, "icon.svg"), "w") as f:
+        f.write(render(icon(), "dark"))
     if "--png" in sys.argv:
         social_png()
+        icon_png()
     print("ok")
 
 

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0b0e1c"/><stop offset="1" stop-color="#191c45"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="2" cy="2" r="1.2" fill="#3a4170"/>
+  </pattern>
+  <radialGradient id="fade" cx="0.8" cy="0.3" r="0.8">
+    <stop offset="0" stop-color="#fff" stop-opacity="1"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+  </radialGradient>
+  <mask id="dotmask"><rect width="100%" height="100%" fill="url(#fade)"/></mask>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="8" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <marker id="ah-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f5b041"/></marker><marker id="ah-indigo" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c7ff2"/></marker><marker id="ah-teal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2fa7a0"/></marker><marker id="ah-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6d7597"/></marker>
+  
+</defs>
+<style></style>
+<rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+<rect width="1024" height="1024" rx="220" fill="url(#dots)" mask="url(#dotmask)" opacity="0.6"/>
+<rect x="212.0" y="212.0" width="600.0" height="600.0" rx="130.4" fill="none" stroke="#7c7ff2" stroke-width="40.0"/>
+<rect x="314.0" y="314.0" width="396.0" height="396.0" rx="86.1" fill="none" stroke="#6d7597" stroke-width="27.3"/>
+<rect x="410.0" y="410.0" width="204.0" height="204.0" rx="44.3" fill="none" stroke="#f5b041" stroke-width="25.0"/>
+<g ><line x1="512.0" y1="512.0" x2="716.0" y2="308.0" stroke="#f5b041" stroke-width="21.4" stroke-linecap="round"/><circle cx="716.0" cy="308.0" r="21.2" fill="#fcd34d"/></g>
+<circle cx="512.0" cy="512.0" r="35.3" fill="#fcd34d" filter="url(#glow)" />
+</svg>
