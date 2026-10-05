@@ -70,7 +70,7 @@ uvx cogvault search --tenant $M "how do we deploy"
 The MCP server indexes on start by itself; the CLI `search` reads the existing index.
 `--ignore MEMORY.md` keeps the index file from competing with the cards it points to.
 
-<img alt="A real Claude Code session with the cogvault plugin: asked why the worker keeps restarting, the agent recalls a memory card and answers with the fix, then saves a new card with /remember-style wording" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/demo.gif">
+<img alt="A real Claude Code session with the cogvault plugin: asked why the worker keeps restarting, the agent recalls a memory card and answers with the fix, then saves a new card when told to remember something" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/demo.gif">
 
 <sub>Unedited answers from a real session (Sonnet, plugin installed, a demo memory of six
 cards); only the waiting time is cut.</sub>
@@ -329,13 +329,15 @@ Every recall is logged (one JSONL line) so you can measure whether the memory is
 actually helping. `cogvault analyze` turns the log into a report:
 
 ```bash
-cogvault analyze            # recalls, no-hit rate, latency p50/p95, avg top score
+cogvault analyze            # recalls, latency, per-tenant hit distance, weakest hits, card writes
 cogvault analyze --json     # machine-readable
 ```
 
-The **no-hit rate** and **recent no-hit queries** are the signal that matters: they
-tell you what your agents tried to recall and *couldn't* — i.e. the memory gaps to
-fill. Set `COGVAULT_LOG=off` to disable, or `COGVAULT_LOG=/path.jsonl` to relocate.
+The section that matters is **weakest hits**: each tenant's worst decile by vector
+distance — queries where recall returned *something* (hybrid search almost always does)
+but probably not the answer. That list is what your agents tried to recall and couldn't,
+i.e. the memory gaps to fill. Set `COGVAULT_LOG=off` to disable, or
+`COGVAULT_LOG=/path.jsonl` to relocate.
 
 ## Multi-tenant fleets
 
