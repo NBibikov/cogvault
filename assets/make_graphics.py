@@ -28,7 +28,7 @@ THEMES = {
         amber="#f5b041", amber_hi="#fcd34d", amber_soft="#3a2c16",
         teal="#2fa7a0", teal_soft="#143537",
         # benchmark series (validated: dataviz validate_palette --mode dark)
-        s1="#c4801f", s2="#7c7ff2", s3="#2fa7a0",
+        s1="#c4801f", s2="#7c7ff2", s3="#2fa7a0", s4="#d0609a",
         dot="#3a4170", grid="#232a4a",
     ),
     "light": dict(
@@ -37,7 +37,7 @@ THEMES = {
         indigo="#4f46e5", indigo_deep="#4338ca", indigo_soft="#e6e6fd",
         amber="#c97a0a", amber_hi="#f59e0b", amber_soft="#fdf0d9",
         teal="#0d9488", teal_soft="#dcf3f0",
-        s1="#c97a0a", s2="#4f46e5", s3="#0d9488",
+        s1="#c97a0a", s2="#4f46e5", s3="#0d9488", s4="#c0397f",
         dot="#d4d7ea", grid="#e7e9f3",
     ),
 }
@@ -332,46 +332,61 @@ def fleet():
 
 
 # ------------------------------------------------------------- benchmark -----
+BENCH_SERIES = (  # key in benchmark.json, legend label, color token (validated order)
+    ("e5_summary", "e5-small + summary chunk (fleet config)", "s1"),
+    ("e5_nosummary", "e5-small, no summary chunk", "s4"),
+    ("minilm", "multilingual MiniLM (built-in default)", "s2"),
+    ("bge_en", "bge-small-en (English-only)", "s3"),
+)
+
+
 def benchmark():
-    """Small multiples, one shared 0–1 scale. Numbers = README benchmark table."""
-    W, H = 1200, 420
-    series = (("cogvault · bge-small-en", "s1", (0.87, 0.93, 0.900), "strict"),
-              ("cogvault · multilingual (default)", "s2", (0.60, 0.87, 0.728), "strict"),
-              ("incumbent (FSRS binary)", "s3", (0.53, 0.80, 0.683), "lenient"))
-    metrics = (("hit@1", "pct"), ("hit@3", "pct"), ("MRR", "dec"))
-    b = [t(40, 58, "Recall on 15 paraphrased queries", 26, weight=750),
-         t(40, 84, "Zero keyword overlap with the target file · real 18-file agent memory · higher is better",
-           15, fill="ink2")]
-    # legend
+    """Small multiples on one shared 0–1 scale, 95% bootstrap whiskers.
+    Numbers come from benchmark.json (aggregates only — the queries are private)."""
+    import json
+    data = json.load(open(os.path.join(OUT, "benchmark.json")))
+    meta = data["_meta"]
+    W, H = 1200, 470
+    metrics = (("hit@1", "right card ranked first"), ("hit@5", "right card in the top 5"),
+               ("mrr@10", "mean reciprocal rank"))
+    b = [t(40, 58, f"Recall on {meta['scored']} real agent queries", 26, weight=750),
+         t(40, 84, f"Pulled from the query log of {meta['tenants']} live tenants · answers judged against the actual "
+                   f"cards · cogvault {meta['version']}", 15, fill="ink2")]
     lx = 40
-    for name, col, _, grading in series:
+    for _, name, col in BENCH_SERIES:
         b.append(f'<rect x="{lx}" y="108" width="14" height="14" rx="4" fill="{{{col}}}"/>')
-        label = f"{name} — {grading} grading"
-        b.append(t(lx + 22, 120, label, 13, fill="ink2"))
-        lx += 46 + len(label) * 6.4
-    pw, gap, x0, top = 356, 26, 40, 150
-    bar_h, bar_gap = 34, 12
-    for m, (metric, fmt) in enumerate(metrics):
+        b.append(t(lx + 22, 120, name, 13, fill="ink2"))
+        lx += 40 + len(name) * 6.3
+    pw, gap, x0, top = 356, 26, 40, 146
+    bar_h, bar_gap = 30, 10
+    for m, (metric, sub) in enumerate(metrics):
         px = x0 + m * (pw + gap)
-        b.append(box(px, top, pw, 226, r=12, fill="surface", stroke="border", sw=1))
-        b.append(t(px + 18, top + 32, metric, 16, weight=700))
-        plot_x, plot_w = px + 18, pw - 90
+        b.append(box(px, top, pw, 262, r=12, fill="surface", stroke="border", sw=1))
+        b.append(t(px + 18, top + 30, metric.replace("mrr@10", "MRR@10"), 16, weight=700))
+        b.append(t(px + pw - 18, top + 30, sub, 12, fill="muted", anchor="end"))
+        plot_x, plot_w = px + 18, pw - 92
         for q in (0.25, 0.5, 0.75, 1.0):
             gx = plot_x + plot_w * q
-            b.append(f'<line x1="{gx:.1f}" y1="{top + 48}" x2="{gx:.1f}" y2="{top + 192}" stroke="{{grid}}"/>')
-            b.append(t(gx, top + 212, f"{q:g}", 11, fill="muted", anchor="middle"))
-        for k, (_, col, vals, _) in enumerate(series):
-            v = vals[m]
-            y = top + 52 + k * (bar_h + bar_gap)
+            b.append(f'<line x1="{gx:.1f}" y1="{top + 44}" x2="{gx:.1f}" y2="{top + 228}" stroke="{{grid}}"/>')
+            b.append(t(gx, top + 248, f"{q:g}", 11, fill="muted", anchor="middle"))
+        for k, (key, _, col) in enumerate(BENCH_SERIES):
+            row = data[key]
+            v, (lo, hi) = row[metric], row["ci95"][m]
+            y = top + 48 + k * (bar_h + bar_gap)
             bw = plot_w * v
-            # rounded data end, square baseline end
             b.append(f'<path d="M {plot_x} {y} H {plot_x + bw - 4:.1f} Q {plot_x + bw:.1f} {y} {plot_x + bw:.1f} {y + 4} '
                      f'V {y + bar_h - 4} Q {plot_x + bw:.1f} {y + bar_h} {plot_x + bw - 4:.1f} {y + bar_h} H {plot_x} Z" '
                      f'fill="{{{col}}}"/>')
-            label = f"{v*100:.0f}%" if fmt == "pct" else f"{v:.3f}"
-            b.append(t(plot_x + bw + 8, y + 23, label, 14, fill="ink", weight=700 if k == 0 else 500))
-    b.append(t(40, 404, "A smoke test, not a leaderboard. cogvault graded on the exact file; the incumbent on a substring match.",
+            cy = y + bar_h / 2
+            x1, x2 = plot_x + plot_w * lo, plot_x + plot_w * hi
+            b.append(f'<path d="M {x1:.1f} {cy} H {x2:.1f} M {x1:.1f} {cy - 5} V {cy + 5} M {x2:.1f} {cy - 5} V {cy + 5}" '
+                     f'stroke="{{ink}}" stroke-opacity="0.55" stroke-width="1.5" fill="none"/>')
+            b.append(t(max(plot_x + bw, x2) + 8, y + 20, f"{v:.2f}", 13, fill="ink", weight=700 if k == 0 else 500))
+    b.append(t(40, 436, f"Whiskers: 95% bootstrap intervals. Overlapping whiskers = no proven difference at this sample "
+                        f"size. {meta['gaps']} {'query' if meta['gaps'] == 1 else 'queries'} with no answer in memory are counted as gaps, not scored.",
                13, fill="muted"))
+    b.append(t(40, 456, "Reproduce on your own memory: cogvault eval --tenant DIR  (reads DIR/.cogvault-golden.jsonl)",
+               13, fill="muted", family=MONO))
     return frame(W, H, "\n".join(b))
 
 

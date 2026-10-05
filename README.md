@@ -62,27 +62,37 @@ best chunk, so one long file can't fill the whole result list.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
-  <img alt="Bar chart: cogvault bge-small-en hit@1 87%, multilingual 60%, incumbent 53%" src="assets/benchmark-light.svg">
+  <img alt="Bar chart, 65 real agent queries: e5-small with summary chunk hit@1 0.57, hit@5 0.91, MRR 0.70; MiniLM default hit@5 0.80; bge-small-en hit@5 0.77" src="assets/benchmark-light.svg">
 </picture>
 
-<details>
-<summary>Table and method</summary>
+Measured on **real** recall traffic, not synthetic questions: 66 queries sampled from the
+query logs of 6 live agent tenants (58% Ukrainian, the rest English), each judged against
+the actual cards — including answers that no configuration returned. One query has no
+answer in memory and counts as a gap, so 65 are scored. Every configuration was re-indexed
+from scratch on copies of the same tenants with `cogvault 0.11.0`.
 
-On 15 paraphrased English queries (zero keyword overlap with target files) over a real
-18-file agent memory directory, against a closed-source incumbent (an FSRS Rust binary):
+| Configuration | hit@1 | hit@5 | MRR@10 |
+|---------------|-------|-------|--------|
+| `multilingual-e5-small`, `chunk_chars = 700`, summary chunk | **0.57** | **0.91** | **0.70** |
+| `multilingual-e5-small`, `chunk_chars = 700`, no summary chunk | 0.55 | 0.86 | 0.69 |
+| `paraphrase-multilingual-MiniLM-L12-v2` (built-in default) | 0.54 | 0.80 | 0.66 |
+| `bge-small-en-v1.5` (English-only) | 0.57 | 0.77 | 0.65 |
 
-| System                              | hit@1   | hit@3   | MRR       | scoring             |
-|-------------------------------------|---------|---------|-----------|---------------------|
-| cogvault · `bge-small-en` (EN-tuned)| **87%** | **93%** | **0.900** | strict (exact file) |
-| cogvault · multilingual (default)   | 60%     | 87%     | 0.728     | strict (exact file) |
-| incumbent                           | 53%     | 80%     | 0.683     | lenient (substring) |
+What the numbers do and don't say:
 
-</details>
+- **hit@1 is a tie.** All four land within 0.54–0.57, and the 95% bootstrap intervals
+  overlap almost completely. Real agent queries read like card titles, so the right card
+  usually wins on its name alone.
+- **The gap is in the top 5.** e5-small with the summary chunk puts the answer in the top 5
+  for 91% of queries vs. 80% for the default MiniLM and 77% for English-only bge on this
+  mixed-language memory. That's what an agent reading 5 results actually feels.
+- **65 queries is still a small sample.** Treat differences under ~0.1 as noise. The
+  aggregate numbers are in [`assets/benchmark.json`](assets/benchmark.json); the queries
+  are private and stay in each tenant.
 
-Both cogvault configs beat the incumbent *despite being graded more strictly* (exact
-filename vs. lenient substring). The English-tuned model is sharper on English; the
-multilingual default trades some of that for **working Cyrillic recall** (see the model
-table below). 15 queries is a smoke test, not a leaderboard — run it on your own vault.
+Run the same check on your own memory: put judged queries in
+`<tenant>/.cogvault-golden.jsonl` (`{"query": "...", "relevant": ["file.md"]}`, empty
+`relevant` = a known gap) and run `cogvault eval --tenant DIR`.
 
 ## Choosing an embedding model
 
@@ -90,17 +100,17 @@ Agent memory is often **not** English-only. The default is multilingual so nothi
 is *broken* out of the box — but pick the model that matches your fleet's language mix
 (set `COGVAULT_MODEL`, or `Config(model=...)`). Switching models auto-rebuilds the index.
 
-| Model (`COGVAULT_MODEL`) | Dim | Size | EN recall* | Cyrillic / multilingual | When |
+| Model (`COGVAULT_MODEL`) | Dim | Size | Real-query hit@5* | Cyrillic / multilingual | When |
 |--------------------------|-----|------|-----------|--------------------------|------|
-| `paraphrase-multilingual-MiniLM-L12-v2` **(default)** | 384 | 0.22 GB | hit@1 60% | ✅ works | Mixed-language fleets; safe default |
-| `BAAI/bge-small-en-v1.5` | 384 | 0.13 GB | **hit@1 87%** | ❌ Cyrillic vectors break | English-only memory |
-| `intfloat/multilingual-e5-small` | 384 | 0.47 GB | — | ✅ best per GB (512-token window) | Mixed-language fleets; use `chunk_chars = 700` |
-| `intfloat/multilingual-e5-large` | 1024 | 2.24 GB | high | ✅ best | Max quality, RAM to spare |
+| `paraphrase-multilingual-MiniLM-L12-v2` **(default)** | 384 | 0.22 GB | 0.80 | ✅ works | Mixed-language fleets; safe default |
+| `BAAI/bge-small-en-v1.5` | 384 | 0.13 GB | 0.77 | ❌ Cyrillic vectors break | English-only memory |
+| `intfloat/multilingual-e5-small` | 384 | 0.47 GB | **0.91** | ✅ best per GB (512-token window) | Mixed-language fleets; use `chunk_chars = 700` |
+| `intfloat/multilingual-e5-large` | 1024 | 2.24 GB | not measured | ✅ best | Max quality, RAM to spare |
 
-<sub>*15-query ground-truth smoke test over a real mixed EN/UK memory dir. The default
-trades some English sharpness for working Cyrillic recall — `bge-small-en` returns a
-**negative** relevance margin on Ukrainian queries (a distractor outranks the answer),
-so it is unsafe for non-English content. Run `cogvault` on your own vault to decide.</sub>
+<sub>*From the [benchmark](#benchmark) above: 65 real queries over mixed EN/UK memory,
+cogvault 0.11.0. On English-only memory `bge-small-en` is a fine choice; on Ukrainian
+content it returns a **negative** relevance margin (a distractor outranks the answer),
+so it is unsafe for non-English memory. Run `cogvault eval` on your own vault to decide.</sub>
 
 ```bash
 COGVAULT_MODEL=BAAI/bge-small-en-v1.5 cogvault index --tenant ~/agent/memory
