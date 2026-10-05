@@ -196,7 +196,7 @@ class MCPServer:
                     # raise KeyError deep inside _write_card, which reached the
                     # agent as an opaque JSON-RPC -32000 "'content'" — the agent
                     # believed it had saved a memory that was never written (one
-                    # such silent loss on tenant-d, 2026-07). Fail loudly with
+                    # such silent loss on a production tenant, 2026-07). Fail loudly with
                     # an invalid-params error naming the field instead.
                     content = args.get("content") if isinstance(args, dict) else None
                     if not isinstance(content, str) or not content.strip():

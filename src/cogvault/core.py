@@ -237,7 +237,7 @@ def model_cache_dir() -> str:
     macOS that is $TMPDIR (/var/folders/...), which the OS periodically purges —
     so an index or recall that ran fine yesterday dies today with
     `NoSuchFile: [ONNXRuntimeError] Load model from /var/folders/...`. Four such
-    failures (tenant-a, tenant-b) sat in the query log before this was
+    failures (two tenants) sat in the query log before this was
     pinned. Keep the weights next to the indexes, under a stable cache root."""
     # Deliberately NOT under $XDG_CACHE_HOME: that variable is redirected per
     # test-run (and per sandbox) to isolate INDEXES, but model weights are a
@@ -393,7 +393,7 @@ def _embedder(model: str):
                 import warnings
                 # fastembed >=0.6 warns that MiniLM now mean-pools instead of
                 # using the CLS token. Verified 2026-09-01 against three live
-                # tenants (agent-a, tenant-a, tenant-b; both pinned models):
+                # tenants (both pinned models):
                 # cos(stored_vector, fresh embed of the same text) == 1.0000 on
                 # every sampled chunk, so our indexes already match the current
                 # behaviour and need no re-embed. The warning fires on every CLI

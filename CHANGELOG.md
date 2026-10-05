@@ -75,7 +75,7 @@ degrading for weeks**, and none of the existing metrics could show it.
   `cache_dir`, so fastembed unpacked its ONNX weights into `$TMPDIR`
   (`/var/folders/...` on macOS). When the OS purged that, indexing and recall
   died with `NoSuchFile: [ONNXRuntimeError] Load model from /var/folders/...` —
-  four such failures were sitting in the query log (tenant-a, tenant-b).
+  four such failures were sitting in the query log on two tenants.
   Weights now live under `~/.cache/fastembed` (override:
   `$FASTEMBED_CACHE_PATH`), next to the indexes they belong to.
 - **Detect embedding-BACKEND drift, not just model drift.** `_model_mismatch()`
@@ -105,7 +105,7 @@ degrading for weeks**, and none of the existing metrics could show it.
 - **`cogvault_record` validates `content`.** A missing or blank field raised
   `KeyError` deep inside `_write_card`, surfacing as an opaque `-32000
   "'content'"` — the agent believed it had saved a memory that was never
-  written (one silent loss on tenant-d). Now a `-32602` naming the field.
+  written (one silent loss on a production tenant). Now a `-32602` naming the field.
 - **Write-side telemetry now covers the path agents actually use.** `log_record`
   fired only from the MCP `cogvault_record` tool, but almost nobody writes that
   way: agents and the `/remember` skill write markdown files and then run
@@ -147,7 +147,7 @@ degrading for weeks**, and none of the existing metrics could show it.
   `MEMORY`/`INDEX`/`reference_`/`architecture` but not `feedback_` — so on a
   tenant with `half_life_days` set, standing rules ("never build unasked", "no
   Android commits") sank below fresh session notes purely because nobody had
-  edited the file in months. On the tenant-a tenant this exempted 200 more
+  edited the file in months. On the largest tenant this exempted 200 more
   chunks. Rebuild the index to recompute the flag on existing tenants.
 
 ## 0.8.1 — 2026-07-08 — write-side telemetry & log hygiene
