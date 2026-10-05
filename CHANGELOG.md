@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.3 — 2026-10-05 — agents actually check memory first
+
+- **MCP `instructions`.** The server now sends instructions with `initialize`, which
+  Claude Code puts in the system prompt: recall before investigating a bug, a how-to
+  (run / test / deploy / configure), where something lives, or a past decision; record
+  decisions and fixes after. Tool descriptions alone were not enough — clients may defer
+  MCP tool schemas, and in testing the model answered "how do I run the API tests?" by
+  grepping an empty repo while the answer sat in memory. On a 4-question probe the agent
+  went from recalling ~1 time in 6 to 9 in 10.
+- `cogvault_recall` description and the plugin's `memory` skill now name the concrete
+  triggers (bugs, errors, restart loops, "how do we…", "where is…", "what did we decide…").
+- Plugin: the `doctor` skill is gone — it ran the CLI through the shell, outside the MCP
+  server. The health check stays a CLI command (`uvx cogvault doctor`).
+
 ## 0.11.2 — 2026-10-05 — Claude Code plugin
 
 - **Claude Code plugin.** The repo is a plugin marketplace:

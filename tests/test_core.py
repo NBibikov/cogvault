@@ -194,7 +194,8 @@ def test_concurrent_writers_no_collision(tmpvault):
     procs = [mp.Process(target=_concurrent_writer, args=(tmpvault, i, q)) for i in range(3)]
     for p in procs: p.start()
     for p in procs: p.join(timeout=60)
-    total = sum(q.get() for _ in procs)
+    # A child that dies never puts its count: fail instead of hanging forever.
+    total = sum(q.get(timeout=60) for _ in procs)
     assert total == 0, f"{total} concurrent reindex errors (rowid collision regressed)"
 
 
@@ -692,6 +693,19 @@ def test_record_event_logged(tmpvault, monkeypatch):
     # `cogvault index` path (the /remember skill) in the same counter.
     assert rec["chunks"] >= 1
     assert rec["tenant"].count("/") == 1          # parent/basename label, not bare
+
+
+def test_initialize_sends_instructions(tmpvault):
+    """Clients may defer MCP tool schemas, so the tool description alone did not
+    make the model check memory first. `instructions` on initialize lands in the
+    client's system prompt and must name the recall-first rule."""
+    from cogvault.mcp_server import MCPServer
+    srv = MCPServer(tmpvault, Config())
+    res = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                      "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                 "clientInfo": {"name": "t", "version": "0"}}})["result"]
+    assert "cogvault_recall first" in res["instructions"]
+    assert "cogvault_record" in res["instructions"]
 
 
 def test_record_with_unexpanded_tilde_tenant(tmp_path, monkeypatch):

@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Use the cogvault memory tools. Recall before answering anything that may depend on earlier sessions (past decisions, bug fixes, infra details, user preferences, "what did we decide", "how do we deploy"); record durable facts after a decision, a non-obvious fix, or a correction from the user.
+description: Check cogvault memory before investigating. Use whenever the user reports a bug, error, crash, restart loop or failing test, asks "why does X…", "how do we deploy/run/test/configure…", "where is/are…", "what did we decide…", or mentions something from an earlier session — call cogvault_recall first, before reading code or logs. Also use after a decision, a non-obvious fix or a user correction, to record it with cogvault_record.
 ---
 
 # Working with cogvault memory

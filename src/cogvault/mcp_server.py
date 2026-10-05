@@ -116,6 +116,22 @@ def _write_card(tenant_dir: str, content: str, title: str | None = None,
             n += 1
 
 
+# Sent with `initialize`; clients that support it (Claude Code does) put this in
+# the system prompt. Tool descriptions alone are not enough: clients may defer
+# MCP tool schemas, and then the model never sees them until it searches — in
+# testing it answered "how do I run the API tests?" by grepping an empty repo
+# while the answer sat in memory.
+INSTRUCTIONS = (
+    "cogvault is the user's persistent memory of earlier sessions: past bugs and "
+    "their fixes, decisions and why they were made, how things are run, tested and "
+    "deployed, where resources live, the user's preferences. Before investigating a "
+    "bug or error, or answering how something is run, tested, deployed or configured, "
+    "where something lives (paths, dashboards, URLs, credentials' location), or what "
+    "was decided before, call cogvault_recall first — it is cheap, and the "
+    "answer may already be there. After a decision, a non-obvious fix or a correction "
+    "from the user, save it with cogvault_record (one fact per card, with a type).")
+
+
 class MCPServer:
     def __init__(self, tenant_dir: str, cfg: Config):
         self.vault = Vault(tenant_dir, cfg)
@@ -124,9 +140,14 @@ class MCPServer:
         self.tenant_dir = self.vault.dir
         self.tools = {
             "cogvault_recall": {
-                "description": "Search this agent's persistent memory. Pass a natural-language "
-                               "query; returns the most relevant memory snippets (hybrid "
-                               "semantic + keyword).",
+                "description": "Search the persistent memory of earlier sessions: past bugs and "
+                               "their fixes, decisions and why they were made, how things are "
+                               "deployed and run, where resources live, the user's preferences. "
+                               "Call this FIRST — before reading code, logs or config — when a "
+                               "question may have come up before: a bug or error, 'why does X…', "
+                               "'how do we…', 'what did we decide…'. Pass a short natural-language "
+                               "query; returns the most relevant memory cards (hybrid semantic + "
+                               "keyword).",
                 "inputSchema": {"type": "object", "properties": {
                     "query": {"type": "string", "description": "What to recall"},
                     "limit": {"type": "integer", "default": 5},
@@ -157,7 +178,8 @@ class MCPServer:
         if m == "initialize":
             return self._ok(rid, {"protocolVersion": PROTOCOL,
                                   "capabilities": {"tools": {}},
-                                  "serverInfo": {"name": "cogvault", "version": __version__}})
+                                  "serverInfo": {"name": "cogvault", "version": __version__},
+                                  "instructions": INSTRUCTIONS})
         if m == "ping":
             return self._ok(rid, {})
         if isinstance(m, str) and m.startswith("notifications/"):
