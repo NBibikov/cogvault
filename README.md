@@ -98,9 +98,15 @@ Precedence: explicit `--model` / `$COGVAULT_MODEL` > `.cogvault.toml` > built-in
 
 ## Install
 
+Not on PyPI yet — install from GitHub (a tagged release, or `main`):
+
 ```bash
-pip install cogvault
+uv tool install git+https://github.com/NBibikov/cogvault@v0.11.0   # CLI on PATH
+# or
+pip install git+https://github.com/NBibikov/cogvault@v0.11.0
 ```
+
+Release wheels are also attached to each [GitHub release](https://github.com/NBibikov/cogvault/releases).
 
 ## Quickstart
 
