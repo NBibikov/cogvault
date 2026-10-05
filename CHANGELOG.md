@@ -13,8 +13,8 @@
   (run / test / deploy / configure), where something lives, or a past decision; record
   decisions and fixes after. Tool descriptions alone were not enough — clients may defer
   MCP tool schemas, and in testing the model answered "how do I run the API tests?" by
-  grepping an empty repo while the answer sat in memory. On a 4-question probe the agent
-  went from recalling ~1 time in 6 to 9 in 10.
+  grepping an empty repo while the answer sat in memory. With the change, on four
+  questions whose answers live in memory, the agent called recall in 9 of 11 runs.
 - `cogvault_recall` description and the plugin's `memory` skill now name the concrete
   triggers (bugs, errors, restart loops, "how do we…", "where is…", "what did we decide…").
 - The full re-embed warning names the backend when that is what changed, instead of the
