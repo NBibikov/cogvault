@@ -70,10 +70,10 @@ uvx cogvault search --tenant $M "how do we deploy"
 The MCP server indexes on start by itself; the CLI `search` reads the existing index.
 `--ignore MEMORY.md` keeps the index file from competing with the cards it points to.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/demo-dark.svg">
-  <img alt="A Claude Code session: the agent calls cogvault_recall and gets a feedback card with a fix, then cogvault_record saves a new card" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/demo-light.svg">
-</picture>
+<img alt="A real Claude Code session with the cogvault plugin: asked why the worker keeps restarting, the agent recalls a memory card and answers with the fix, then saves a new card with /remember-style wording" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/demo.gif">
+
+<sub>Unedited answers from a real session (Sonnet, plugin installed, a demo memory of six
+cards); only the waiting time is cut.</sub>
 
 ---
 
