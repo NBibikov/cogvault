@@ -24,9 +24,11 @@
 when to record:
 
 ```text
-/plugin marketplace add NBibikov/cogvault
-/plugin install cogvault@cogvault
+/plugin install cogvault --marketplace NBibikov/cogvault
 ```
+
+<sub>Claude Code before 2.1.275: `/plugin marketplace add NBibikov/cogvault`, then
+`/plugin install cogvault@cogvault`.</sub>
 
 Memory lives in `~/.cogvault/memory` (set `COGVAULT_TENANT` to change it). The plugin
 adds `/cogvault:remember` and `/cogvault:doctor`.
