@@ -1,16 +1,18 @@
 <div align="center">
 
-![cogvault](assets/banner.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.svg">
+  <img alt="cogvault — fleet-grade local memory for AI agents, over plain Markdown you own" src="assets/hero-light.svg">
+</picture>
 
-# cogvault
+<br>
 
-**Fleet-grade local memory for AI agents — over plain Markdown you own.**
+[![License: MIT](https://img.shields.io/badge/License-MIT-f5b041.svg?style=flat-square)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-4f46e5.svg?style=flat-square)](https://www.python.org)
+[![MCP](https://img.shields.io/badge/MCP-stdio-312e81.svg?style=flat-square)](https://modelcontextprotocol.io)
+[![Release](https://img.shields.io/github/v/release/NBibikov/cogvault?style=flat-square&color=0d9488)](https://github.com/NBibikov/cogvault/releases)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-f5b041.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-4f46e5.svg)](https://www.python.org)
-[![MCP](https://img.shields.io/badge/MCP-stdio-312e81.svg)](https://modelcontextprotocol.io)
-
-Hybrid recall · multi-tenant · one process · **no cloud, no Docker, no LLM**
+**[Why](#why)** · **[How it works](#how-it-works)** · **[Benchmark](#benchmark)** · **[Install](#install)** · **[Quickstart](#quickstart)** · **[MCP](#as-an-mcp-server-claude-code-cursor-any-mcp-client)** · **[Fleets](#multi-tenant-fleets)**
 
 </div>
 
@@ -38,14 +40,33 @@ the wrong trade.
 
 ## How it works
 
-![architecture](assets/architecture.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <img alt="Markdown files are indexed into a derived SQLite database (vectors + FTS5) and recalled through MCP, CLI or Python" src="assets/architecture-light.svg">
+</picture>
+
+### Anatomy of a recall
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/recall-dark.svg">
+  <img alt="A query runs through a semantic and a keyword ranker, fused with RRF, then temporal decay, MMR and one-hit-per-card" src="assets/recall-light.svg">
+</picture>
 
 Hybrid retrieval fuses semantic (vector) and keyword (BM25/FTS5) ranking with
 [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf),
 then applies optional **temporal decay** (recent memory outranks stale) and **MMR**
-(diverse top results, not five near-duplicates).
+(diverse top results, not five near-duplicates). Each card contributes only its
+best chunk, so one long file can't fill the whole result list.
 
 ## Benchmark
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
+  <img alt="Bar chart: cogvault bge-small-en hit@1 87%, multilingual 60%, incumbent 53%" src="assets/benchmark-light.svg">
+</picture>
+
+<details>
+<summary>Table and method</summary>
 
 On 15 paraphrased English queries (zero keyword overlap with target files) over a real
 18-file agent memory directory, against a closed-source incumbent (an FSRS Rust binary):
@@ -56,10 +77,12 @@ On 15 paraphrased English queries (zero keyword overlap with target files) over 
 | cogvault · multilingual (default)   | 60%     | 87%     | 0.728     | strict (exact file) |
 | incumbent                           | 53%     | 80%     | 0.683     | lenient (substring) |
 
+</details>
+
 Both cogvault configs beat the incumbent *despite being graded more strictly* (exact
 filename vs. lenient substring). The English-tuned model is sharper on English; the
 multilingual default trades some of that for **working Cyrillic recall** (see the model
-table above). 15 queries is a smoke test, not a leaderboard — run it on your own vault.
+table below). 15 queries is a smoke test, not a leaderboard — run it on your own vault.
 
 ## Choosing an embedding model
 
@@ -221,12 +244,10 @@ Point one process at many tenants — each directory is an isolated namespace, p
 the test suite (`test_multi_tenant_isolation`). Agent B can never recall Agent A's
 memory unless you point B at A's directory.
 
-```
-~/agents/
-├── agent-a/memory/     ← cogvault tenant
-├── agent-b/memory/     ← cogvault tenant
-└── agent-c/memory/     ← cogvault tenant
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/fleet-dark.svg">
+  <img alt="Four agents, each pointed at its own memory directory with its own index; tenants are isolated" src="assets/fleet-light.svg">
+</picture>
 
 ## Design notes
 
@@ -234,7 +255,7 @@ memory unless you point B at A's directory.
 |----------|-----|
 | Markdown = source of truth | Human-readable, `git`-versionable, editable, never locked in a DB |
 | SQLite + `sqlite-vec` + FTS5 | Zero-infra hybrid search; one portable `.db` file; rebuildable |
-| FastEmbed (`bge-small-en-v1.5`, 384-d) | In-process, no server, no API key, ~130 MB |
+| FastEmbed (multilingual MiniLM default, 384-d) | In-process ONNX, no server, no API key, ~220 MB |
 | Content-hash cache | Re-indexing only embeds *changed* chunks |
 | RRF + decay + MMR | Precision, recency, and diversity without a graph DB |
 | One process, many tenants | Fleet infra, not a single-user desktop sidecar |
@@ -250,3 +271,5 @@ memory unless you point B at A's directory.
 ## License
 
 [MIT](LICENSE) — your memory, your files, your infrastructure. Forever.
+
+<sub>Figures are hand-built SVG from [`assets/make_graphics.py`](assets/make_graphics.py) — `python assets/make_graphics.py --png` regenerates them.</sub>

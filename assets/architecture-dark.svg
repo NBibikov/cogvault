@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0b0e1c"/><stop offset="1" stop-color="#191c45"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="2" cy="2" r="1.2" fill="#3a4170"/>
+  </pattern>
+  <radialGradient id="fade" cx="0.8" cy="0.3" r="0.8">
+    <stop offset="0" stop-color="#fff" stop-opacity="1"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+  </radialGradient>
+  <mask id="dotmask"><rect width="100%" height="100%" fill="url(#fade)"/></mask>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="8" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <marker id="ah-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f5b041"/></marker><marker id="ah-indigo" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c7ff2"/></marker><marker id="ah-teal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2fa7a0"/></marker><marker id="ah-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6d7597"/></marker>
+  
+</defs>
+<style>
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+</style>
+<rect width="1200" height="540" rx="22" fill="url(#bg)"/>
+<rect width="1200" height="540" rx="22" fill="url(#dots)" mask="url(#dotmask)" opacity="0.9"/>
+<text x="40" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="26" font-weight="750" fill="#eef0fa" text-anchor="start" >How cogvault works</text>
+<text x="40" y="84" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#a6aecb" text-anchor="start" >Files are the truth. The index is derived, incremental and rebuildable. Recall is deterministic.</text>
+<text x="40" y="132" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#6d7597" text-anchor="start" letter-spacing="1.5">1 · YOUR FILES</text>
+<g transform="rotate(-4 177.0 285.0)" >
+<rect x="52" y="160" width="250" height="250" rx="9" fill="#151a2e" stroke="#6d7597" stroke-width="1.6" />
+<rect x="64" y="172" width="105" height="6" rx="3" fill="#6d7597"/>
+</g>
+<g transform="rotate(-2 171.0 279.0)" >
+<rect x="46" y="154" width="250" height="250" rx="9" fill="#151a2e" stroke="#6d7597" stroke-width="1.6" />
+<rect x="58" y="166" width="105" height="6" rx="3" fill="#6d7597"/>
+</g>
+<rect x="40" y="150" width="260" height="270" rx="12" fill="#151a2e" stroke="#7c7ff2" stroke-width="1.8" />
+<text x="58" y="180" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#6d7597" text-anchor="start" >---</text>
+<text x="58" y="202" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#a6aecb" text-anchor="start" >name: deploy-rules</text>
+<text x="58" y="224" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#7c7ff2" text-anchor="start" >type: feedback</text>
+<text x="58" y="246" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#a6aecb" text-anchor="start" >description: never on Friday</text>
+<text x="58" y="268" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#6d7597" text-anchor="start" >---</text>
+<text x="58" y="290" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#a6aecb" text-anchor="start" ></text>
+<text x="58" y="312" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#eef0fa" text-anchor="start" >Never deploy after 16:00 Fri.</text>
+<text x="58" y="334" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#a6aecb" text-anchor="start" >**Why:** no one on call.</text>
+<text x="58" y="356" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#a6aecb" text-anchor="start" ></text>
+<text x="58" y="378" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#f5b041" text-anchor="start" >See [[project_ci]]</text>
+<text x="40" y="446" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#a6aecb" text-anchor="start" >~/agent/memory/*.md</text>
+<text x="40" y="468" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#6d7597" text-anchor="start" >open · edit · git diff</text>
+<text x="360" y="132" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#6d7597" text-anchor="start" letter-spacing="1.5">2 · INDEX  (.cogvault.db — derived)</text>
+<rect x="360" y="150" width="420" height="270" rx="14" fill="#151a2e" stroke="#2c335a" stroke-width="1.5" />
+<rect x="378" y="168" width="384" height="56" rx="10" fill="#1c2240" stroke="#2c335a" stroke-width="1.5" />
+<text x="394" y="192" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#eef0fa" text-anchor="start" >Chunker</text>
+<text x="394" y="212" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >fit to model token window + summary chunk</text>
+<rect x="378" y="240" width="186" height="96" rx="10" fill="#2a2c6b" stroke="#7c7ff2" stroke-width="1.5" />
+<text x="394" y="266" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#eef0fa" text-anchor="start" >Vectors</text>
+<text x="394" y="288" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >FastEmbed · ONNX</text>
+<text x="394" y="306" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >384-d · sqlite-vec</text>
+<text x="394" y="324" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#7c7ff2" text-anchor="start" >on-device</text>
+<rect x="576" y="240" width="186" height="96" rx="10" fill="#143537" stroke="#2fa7a0" stroke-width="1.5" />
+<text x="592" y="266" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#eef0fa" text-anchor="start" >Keywords</text>
+<text x="592" y="288" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >SQLite FTS5</text>
+<text x="592" y="306" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >BM25 ranking</text>
+<text x="592" y="324" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#2fa7a0" text-anchor="start" >exact terms, IDs</text>
+<text x="394" y="366" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >content-hash cache · only changed files re-embed</text>
+<text x="394" y="388" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >WAL · type + [[links]] parsed at index time</text>
+<text x="360" y="446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#6d7597" text-anchor="start" >delete it → it rebuilds from the files</text>
+<line x1="306" y1="285" x2="352" y2="285" stroke="#f5b041" stroke-width="2" stroke-linecap="round"  marker-end="url(#ah-amber)"/>
+<text x="840" y="132" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#6d7597" text-anchor="start" letter-spacing="1.5">3 · RECALL</text>
+<rect x="840" y="150" width="320" height="118" rx="14" fill="#3a2c16" stroke="#f5b041" stroke-width="1.8" />
+<text x="858" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#eef0fa" text-anchor="start" >Hybrid ranking</text>
+<text x="858" y="202" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#eef0fa" text-anchor="start" >vector ⊕ BM25 → RRF fusion</text>
+<text x="858" y="222" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#eef0fa" text-anchor="start" >→ temporal decay (opt-in)</text>
+<text x="858" y="242" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#eef0fa" text-anchor="start" >→ MMR diversity → 1 hit / card</text>
+<line x1="788" y1="209" x2="832" y2="209" stroke="#f5b041" stroke-width="2" stroke-linecap="round"  marker-end="url(#ah-amber)"/>
+<rect x="840" y="288" width="320" height="36" rx="9" fill="#151a2e" stroke="#2c335a" stroke-width="1.5" />
+<text x="854" y="311" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#7c7ff2" text-anchor="start" >MCP</text>
+<text x="914" y="311" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >cogvault_recall · cogvault_record</text>
+<rect x="840" y="332" width="320" height="36" rx="9" fill="#151a2e" stroke="#2c335a" stroke-width="1.5" />
+<text x="854" y="355" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#7c7ff2" text-anchor="start" >CLI</text>
+<text x="914" y="355" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >index · search · doctor · eval</text>
+<rect x="840" y="376" width="320" height="36" rx="9" fill="#151a2e" stroke="#2c335a" stroke-width="1.5" />
+<text x="854" y="399" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#7c7ff2" text-anchor="start" >Python</text>
+<text x="914" y="399" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#a6aecb" text-anchor="start" >Vault(dir).search(&quot;…&quot;)</text>
+<text x="840" y="446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#6d7597" text-anchor="start" >→ your agent</text>
+<path d="M 1000 456 C 1000 520, 270 520, 270 432" fill="none" stroke="#f5b041" stroke-width="1.8" stroke-dasharray="5 6" marker-end="url(#ah-amber)"/>
+<text x="600" y="512" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#f5b041" text-anchor="middle" >cogvault_record writes a new Markdown card — and indexes it</text>
+</svg>
