@@ -912,9 +912,14 @@ class Vault:
             # starved concurrent searches for the whole rebuild.
             if self._model_mismatch(con):
                 prev = {k: v for k, v in con.execute("SELECT key,value FROM meta")}
-                print(f"cogvault: model/dim mismatch on {self.dir} "
-                      f"(index: {prev.get('model')}/{prev.get('dim')} → "
-                      f"config: {self.cfg.model}/{self.cfg.dim}) — FULL re-embed. "
+                # Name the backend when it is the reason: "MiniLM/384 → MiniLM/384"
+                # read as a bug when only the fastembed/onnxruntime build differed.
+                was = f"{prev.get('model')}/{prev.get('dim')}"
+                now = f"{self.cfg.model}/{self.cfg.dim}"
+                if was == now:
+                    was, now = f"backend {prev.get('backend')}", f"backend {embed_backend()}"
+                print(f"cogvault: embedding mismatch on {self.dir} "
+                      f"(index: {was} → now: {now}) — FULL re-embed. "
                       f"If unintended, check .cogvault.toml / $COGVAULT_MODEL.",
                       file=sys.stderr)
                 full = True
@@ -1155,8 +1160,10 @@ class Vault:
                     f"SELECT id, path FROM chunks WHERE id IN ({ph})", batch))
             seen: set[str] = set()
             deduped = []
+            by_path: dict[str, list[int]] = {}   # every candidate per card, best first
             for cid in ranked:
                 p = paths.get(cid)
+                by_path.setdefault(p, []).append(cid)
                 if p in seen:
                     continue
                 seen.add(p)
@@ -1169,7 +1176,7 @@ class Vault:
                 row = con.execute("SELECT cid,path,text,type FROM chunks WHERE id=?",
                                   (rid,)).fetchone()
                 if row:
-                    text = row[2]
+                    text = self._with_body(con, rid, row[1], row[2], by_path.get(row[1], []))
                     snip = text if self.cfg.snippet_chars <= 0 else text[: self.cfg.snippet_chars]
                     # Raw vector distance for the top hit, surfaced so callers
                     # (and the query log) have a real relevance signal. The RRF
@@ -1192,6 +1199,41 @@ class Vault:
             return out
         finally:
             con.close()
+
+    _WHOLE_CARD_CHARS = 2000
+
+    def _with_body(self, con, rid: int, path: str, text: str, candidates: list[int]) -> str:
+        """The text to return for a card whose best chunk won the ranking.
+
+        When that chunk is the card's summary (`name — description`), returning
+        it alone hands the agent a title and hides the card: a recall for "why
+        does the worker keep restarting" found the right card and the agent
+        replied without its fix, because the fix was in the body. Append the
+        card's best-ranked body chunk, or its first one if no body chunk made
+        the candidate pool."""
+        if not self.cfg.summary_chunk:
+            return text
+        try:
+            with open(os.path.join(self.dir, path), encoding="utf-8", errors="ignore") as f:
+                raw = f.read()
+        except OSError:
+            return text
+        summary = card_summary(raw)
+        if not summary or text.strip() != summary.strip():
+            return text
+        # Cards are meant to hold one fact: a short card goes back whole
+        # (frontmatter dropped — the summary line already carries it).
+        body = strip_frontmatter(raw).strip()
+        if body and len(body) <= self._WHOLE_CARD_CHARS:
+            return f"{text}\n{body}"
+        body_id = next((c for c in candidates if c != rid), None)
+        row = None
+        if body_id is not None:
+            row = con.execute("SELECT text FROM chunks WHERE id=?", (body_id,)).fetchone()
+        if row is None:
+            row = con.execute("SELECT text FROM chunks WHERE path=? AND id<>? AND text<>? "
+                              "ORDER BY id LIMIT 1", (path, rid, text)).fetchone()
+        return f"{text}\n{row[0]}" if row else text
 
     def _related(self, con, src_key: str, cap: int = 8) -> list[str]:
         """Resolve the [[wiki-links]] of one indexed file to card filenames that

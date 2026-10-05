@@ -1,7 +1,13 @@
 # Changelog
 
-## 0.11.3 — 2026-10-05 — agents actually check memory first
+## 0.11.3 — 2026-10-06 — agents check memory first, and get the whole card
 
+- **Fix: a summary hit hid the card.** Since 0.11.0 a card's `name — description` is
+  indexed as its own chunk, and when that chunk ranked best, recall returned *only* that
+  line. Recording the demo exposed it: the agent found the right card and still answered
+  without the fix, because the fix was in the body. A summary hit now returns the whole
+  card when it is short (≤2000 chars, frontmatter dropped), else the summary plus the
+  card's best body chunk. Ranking is unchanged, so the benchmark numbers stand.
 - **MCP `instructions`.** The server now sends instructions with `initialize`, which
   Claude Code puts in the system prompt: recall before investigating a bug, a how-to
   (run / test / deploy / configure), where something lives, or a past decision; record
@@ -11,6 +17,8 @@
   went from recalling ~1 time in 6 to 9 in 10.
 - `cogvault_recall` description and the plugin's `memory` skill now name the concrete
   triggers (bugs, errors, restart loops, "how do we…", "where is…", "what did we decide…").
+- The full re-embed warning names the backend when that is what changed, instead of the
+  confusing "MiniLM/384 → MiniLM/384".
 - Plugin: the `doctor` skill is gone — it ran the CLI through the shell, outside the MCP
   server. The health check stays a CLI command (`uvx cogvault doctor`).
 

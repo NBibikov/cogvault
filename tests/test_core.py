@@ -695,6 +695,21 @@ def test_record_event_logged(tmpvault, monkeypatch):
     assert rec["tenant"].count("/") == 1          # parent/basename label, not bare
 
 
+def test_summary_hit_returns_card_body(tmpvault):
+    """When a card's summary chunk (`name — description`) wins the ranking, the
+    hit must still carry the body: the summary alone hid the fix from the agent."""
+    _write(tmpvault, "feedback_worker.md",
+           "---\nname: worker-crashloop\ndescription: worker restart loop is launchd KeepAlive\n"
+           "type: feedback\n---\nThe worker crashes on start under launchd.\n\n"
+           "Fix: set EnvironmentVariables in the plist.\n")
+    _write(tmpvault, "other.md", "Unrelated note about invoices and billing exports.")
+    v = Vault(tmpvault); v.reindex()
+    hit = v.search("worker restart loop launchd KeepAlive", k=1)[0]
+    assert hit["file"] == "feedback_worker.md"
+    assert "EnvironmentVariables" in hit["text"]
+    assert hit["text"].count("description:") == 0      # frontmatter not repeated
+
+
 def test_initialize_sends_instructions(tmpvault):
     """Clients may defer MCP tool schemas, so the tool description alone did not
     make the model check memory first. `instructions` on initialize lands in the
