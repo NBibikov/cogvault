@@ -1136,3 +1136,17 @@ def test_mcp_recall_validates_args(tmpvault):
                     "params": {"name": "cogvault_recall",
                                "arguments": {"query": "gateway", "limit": "3"}}})
     assert "result" in r
+
+
+def test_one_result_per_card(tmpvault):
+    """Token-window chunking splits a long card into many chunks; recall must
+    still return each card once, not fill top-k with one card's fragments."""
+    body = "\n".join(f"ONNX runtime crash benchmark run {i} on Android device." for i in range(60))
+    _write(tmpvault, "bench.md", body)
+    _write(tmpvault, "other.md", "ONNX runtime crash on Android was a SIGABRT in session init.")
+    v = Vault(tmpvault)
+    v.reindex()
+    res = v.search("ONNX crash Android", k=5)
+    files = [r["file"] for r in res]
+    assert len(files) == len(set(files))
+    assert set(files) == {"bench.md", "other.md"}

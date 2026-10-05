@@ -1051,6 +1051,25 @@ class Vault:
                                if row[2] is not None and row[2] > 0 else row[0])
                         fused[cid] *= math.exp(-lam * age)
             ranked = sorted(fused, key=lambda c: -fused[c])
+            # One hit per card: its best-ranked chunk. With token-window chunks
+            # a long card yields several near-identical candidates, and a
+            # recall for "ONNX crash" spent 3 of 10 slots on one benchmark card.
+            # Agents want distinct cards; the file is the unit they open.
+            paths: dict[int, str] = {}
+            for i in range(0, len(ranked), 500):
+                batch = ranked[i:i + 500]
+                ph = ",".join("?" * len(batch))
+                paths.update(con.execute(
+                    f"SELECT id, path FROM chunks WHERE id IN ({ph})", batch))
+            seen: set[str] = set()
+            deduped = []
+            for cid in ranked:
+                p = paths.get(cid)
+                if p in seen:
+                    continue
+                seen.add(p)
+                deduped.append(cid)
+            ranked = deduped
             # MMR diversity over the fused candidates
             selected = self._mmr(con, ranked, k)
             out = []
