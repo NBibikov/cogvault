@@ -13,5 +13,8 @@ Persistent memory for Claude Code over plain Markdown cards you own — hybrid r
 - **`memory` skill** — tells the agent when to recall and what is worth recording.
 - **`/cogvault:remember [fact]`** — save one fact, or distil the session into cards.
 
+Health check from your shell (not part of the plugin): `uvx cogvault doctor --tenant ~/.cogvault/memory`,
+and `uvx cogvault analyze` for the recall log's no-hit queries.
+
 Cards are ordinary Markdown files: open them, edit them, `git diff` them. The index is a
 rebuildable cache. Full docs: <https://github.com/NBibikov/cogvault>.
