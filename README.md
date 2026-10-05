@@ -13,6 +13,7 @@
 [![MCP](https://img.shields.io/badge/MCP-stdio-312e81.svg?style=flat-square)](https://modelcontextprotocol.io)
 [![PyPI](https://img.shields.io/pypi/v/cogvault?style=flat-square&color=0d9488)](https://pypi.org/project/cogvault/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.NBibikov%2Fcogvault-312e81?style=flat-square)](https://registry.modelcontextprotocol.io/?search=cogvault)
+[![Glama](https://glama.ai/mcp/servers/NBibikov/cogvault/badges/score.svg)](https://glama.ai/mcp/servers/NBibikov/cogvault)
 
 **[Get started](#get-started-in-30-seconds)** · **[Why](#why)** · **[Compared](#compared-to)** · **[How it works](#how-it-works)** · **[Benchmark](#benchmark)** · **[Install](#install)** · **[Quickstart](#quickstart)** · **[MCP](#as-an-mcp-server-claude-code-cursor-any-mcp-client)** · **[Fleets](#multi-tenant-fleets)**
 
