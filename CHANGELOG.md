@@ -32,6 +32,16 @@
   same-title records cannot overwrite each other; `cogvault_recall` validates
   `query` and clamps `limit`.
 - **Long paragraphs are split at whitespace**, not mid-word.
+- **One result per card.** Smaller chunks let one long card fill top-k with its
+  own fragments; each file now contributes its best-ranked chunk only.
+- **`cogvault repair`** — fixes the mechanical doctor findings (see README).
+  Fleet run on 2026-10-05: 51 cards repaired, legacy names 31 → 0, nested
+  frontmatter 12 → 0, untyped 21 → 0.
+- **Link resolution accepts a missing type prefix** (`[[build-means-x]]` →
+  `feedback_build_means_x.md`), for recall's `Related:` line and for `doctor`.
+  `doctor` also stops flagging links inside code, paths to external files, and
+  targets that exist but are excluded from the index. Fleet ghost links: 195 → 104,
+  the remainder being cards that were never written.
 
 ## 0.9.0 — 2026-09-01 — embedding-backend drift, honest metrics
 

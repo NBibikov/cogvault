@@ -1150,3 +1150,80 @@ def test_one_result_per_card(tmpvault):
     files = [r["file"] for r in res]
     assert len(files) == len(set(files))
     assert set(files) == {"bench.md", "other.md"}
+
+
+def test_repair_unwraps_renames_and_relinks(tmpvault):
+    """The legacy MCP shape: a formatted card wrapped in a second block under a
+    timestamp filename. repair() must restore the inner card, give it a
+    <type>_<slug>.md name, rewrite references, and keep the card's age."""
+    legacy = ('---\nname: "Android bench — ML Kit only 1.5x"\n'
+              'description: "--- name: project-bg-bench description: x"\n---\n\n'
+              '---\nname: project-bg-bench\ndescription: Bench on A54.\n'
+              'metadata:\n  type: project\n---\n\nML Kit p50 513ms.\n')
+    _write(tmpvault, "card-20260806-194607-android-bench.md", legacy)
+    _write(tmpvault, "MEMORY.md", "- [Bench](card-20260806-194607-android-bench.md)\n")
+    _write(tmpvault, "feedback_rule.md", "---\nname: feedback-rule\nmetadata:\n  type: feedback\n---\n\nok\n")
+    old = time.time() - 50 * 86400
+    os.utime(os.path.join(tmpvault, "card-20260806-194607-android-bench.md"), (old, old))
+    v = Vault(tmpvault, Config(ignore_globs=("MEMORY.md",)))   # as on real tenants
+    plan = v.repair()
+    assert [p["file"] for p in plan] == ["card-20260806-194607-android-bench.md"]
+    assert os.path.exists(os.path.join(tmpvault, "card-20260806-194607-android-bench.md"))  # dry run
+    v.repair(apply=True)
+    new = os.path.join(tmpvault, "project_bg_bench.md")
+    text = open(new).read()
+    assert text.startswith("---\nname: project-bg-bench")
+    assert text.count("---\n") == 2
+    assert "project_bg_bench.md" in open(os.path.join(tmpvault, "MEMORY.md")).read()
+    assert abs(os.path.getmtime(new) - old) < 2
+    assert v.diagnose()["legacy_names"] == []
+    assert v.repair() == []                       # idempotent
+
+
+def test_repaired_in_place_card_is_reindexed(tmpvault):
+    """repair keeps mtime (decay), so it must invalidate the index row itself,
+    or the incremental reindex never sees the fix."""
+    _write(tmpvault, "project_z.md", "Zebra crossing lights run on a timer.")
+    v = Vault(tmpvault)
+    v.reindex()
+    assert v.repair(apply=True)                    # adds frontmatter in place
+    assert v.reindex()["files_reindexed"] == 1
+    con = v._connect()
+    assert con.execute("SELECT type FROM chunks WHERE path='project_z.md'").fetchone()[0] == "project"
+    con.close()
+
+
+def test_repair_leaves_healthy_cards_alone(tmpvault):
+    _write(tmpvault, "feedback_x.md", '---\nname: "A sentence name"\nmetadata:\n  type: feedback\n---\n\nbody\n')
+    _write(tmpvault, "reference_y.md", "---\nvestige_id: 1\n---\n\nbody\n")
+    plan = {p["file"]: p for p in Vault(tmpvault).repair()}
+    assert "feedback_x.md" not in plan
+    assert plan["reference_y.md"]["fixes"][-1] == "name=reference-y" or \
+        "name=reference-y" in plan["reference_y.md"]["fixes"]
+
+
+def test_wikilinks_in_code_are_not_links():
+    from cogvault.core import parse_wikilinks
+    text = "Real [[card-a]]. Syntax is `[[slug]]`.\n```\n[[block-example]]\n```\n"
+    assert parse_wikilinks(text) == ["card-a"]
+
+
+def test_doctor_does_not_flag_ignored_or_path_targets(tmpvault):
+    _write(tmpvault, "project_state.md", "journal")
+    _write(tmpvault, "feedback_a.md", "---\nname: feedback-a\nmetadata:\n  type: feedback\n---\n\n"
+           "See [[project_state]] and [[../trade_journal/SPEC.md]] and [[nope-card]].\n")
+    rep = Vault(tmpvault, Config(ignore_globs=("project_state.md",))).diagnose()
+    assert [g["target"] for g in rep["ghost_links"]] == ["nope-card"]
+
+
+def test_links_resolve_without_type_prefix(tmpvault):
+    _write(tmpvault, "feedback_build_means_fastlane_beta.md",
+           "---\nname: feedback-build-means-fastlane-beta\nmetadata:\n  type: feedback\n---\n\nbuild = fastlane beta\n")
+    _write(tmpvault, "project_release.md",
+           "---\nname: project-release\nmetadata:\n  type: project\n---\n\n"
+           "Release zebra checklist. See [[build-means-fastlane-beta]].\n")
+    v = Vault(tmpvault)
+    v.reindex()
+    res = v.search("release zebra checklist", k=1)
+    assert res[0]["related"] == ["feedback_build_means_fastlane_beta.md"]
+    assert v.diagnose()["ghost_links"] == []

@@ -11,6 +11,7 @@ Pipeline:  files -> markdown-aware chunks -> content-hash dedup/cache ->
 """
 from __future__ import annotations
 import os, re, sys, struct, hashlib, sqlite3, glob, math, time, threading
+from json import dumps as json_dumps
 from dataclasses import dataclass, field
 
 import sqlite_vec
@@ -470,11 +471,35 @@ def parse_frontmatter_name(text: str) -> str | None:
 
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]\[|#\n]+)")
+_CODE_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+
+_LINK_TYPES = ("project", "feedback", "reference", "user")
+
+
+def link_variants(target: str) -> list[str]:
+    """Spellings a [[link]] may legitimately mean, most literal first: as
+    written, with -/_ swapped, then with a card-type prefix. Agents routinely
+    drop the prefix ([[build-means-fastlane-beta]] for
+    feedback_build_means_fastlane_beta.md): ~30 of the fleet's ghost links on
+    2026-10-05 were exactly that."""
+    base = [target, target.replace("-", "_"), target.replace("_", "-")]
+    out = list(dict.fromkeys(base))
+    if not target.lower().startswith(_LINK_TYPES):
+        for t in _LINK_TYPES:
+            for b in (f"{t}-{target}", f"{t}_{target}"):
+                for v in (b, b.replace("-", "_"), b.replace("_", "-")):
+                    if v not in out:
+                        out.append(v)
+    return out
+
 
 def parse_wikilinks(text: str) -> list[str]:
     """All [[wiki-link]] target slugs in a document, deduped, order preserved.
     Slugs are returned as written; resolution to real files happens at search
     time against the index (targets are filename stems by convention)."""
+    # Links quoted as code are examples, not links: cards documenting the link
+    # syntax itself (`[[slug]]`) showed up as ghost links to "slug".
+    text = _CODE_RE.sub("", text)
     seen: dict[str, None] = {}
     for slug in _WIKILINK_RE.findall(text):
         slug = slug.strip()
@@ -1115,8 +1140,8 @@ class Vault:
         for (target,) in con.execute(
                 "SELECT DISTINCT target FROM links WHERE src_path=?", (src_key,)):
             row = None
-            # Separator-insensitive: try the slug as written, then swapped.
-            for cand in (target, target.replace("-", "_"), target.replace("_", "-")):
+            # Separator-insensitive, then type-prefix-insensitive (link_variants).
+            for cand in link_variants(target):
                 row = con.execute(
                     "SELECT path FROM files WHERE name = ? OR path = ? OR path LIKE ? "
                     "ORDER BY (name = ?) DESC LIMIT 1",
@@ -1146,6 +1171,14 @@ class Vault:
 
         names: dict[str, list[str]] = collections.defaultdict(list)
         resolvable: set[str] = set()
+        # Any markdown file under the tenant is a real target, even when it is
+        # deliberately kept out of the index (ignore_globs, archive/ in flat
+        # mode): a link to project_state.md is not a ghost, just unindexed.
+        for r, _ds, ns in os.walk(self.dir):
+            for n in ns:
+                if n.endswith(".md"):
+                    st = n[:-3]
+                    resolvable |= {st, st.replace("-", "_"), st.replace("_", "-")}
         for key, fp in sorted(files.items()):
             text = open(fp, encoding="utf-8", errors="ignore").read()
             base = os.path.basename(key)
@@ -1178,7 +1211,9 @@ class Vault:
         for key, fp in sorted(files.items()):
             text = open(fp, encoding="utf-8", errors="ignore").read()
             for tgt in parse_wikilinks(text):
-                if not ({tgt, tgt.replace("-", "_"), tgt.replace("_", "-")} & resolvable):
+                if "/" in tgt or tgt.endswith(".md"):
+                    continue          # a path to a file outside memory, not a card slug
+                if not (set(link_variants(tgt)) & resolvable):
                     report["ghost_links"].append({"file": key, "target": tgt})
 
         report["duplicate_names"] = [{"name": n, "files": fs}
@@ -1188,6 +1223,154 @@ class Vault:
                                 "nested_frontmatter", "duplicate_names", "no_frontmatter"))
         con.close()
         return report
+
+    # ---- mechanical card repair (the fixable half of diagnose()) -------------
+    _CARD_TYPES = ("project", "feedback", "reference", "user")
+
+    def repair(self, apply: bool = False) -> list[dict]:
+        """Plan (and with apply=True, perform) mechanical fixes for cards that
+        diagnose() flags and that need no judgement:
+
+        - nested frontmatter: an old cogvault_record wrapped an already-formatted
+          card in a second block; the outer one is dropped, the inner one kept.
+        - missing type: inferred from the name/description/filename prefix, else
+          `project` (every legacy MCP card audited on 2026-10-05 was one).
+        - non-slug name ("card", a sentence, snake_case): rewritten as a slug.
+        - timestamp filename (card-YYYYMMDD-…): renamed to <type>_<slug>.md.
+        - no frontmatter on a <type>_*.md card: a minimal block is added.
+
+        A rename rewrites every reference to the old filename/stem in the
+        tenant (MEMORY.md pointers, [[links]]), so nothing is orphaned. Cards
+        never overwrite each other; a taken name gets a numeric suffix.
+        Returns one dict per touched card: {file, new_file, fixes}."""
+        from .mcp_server import _slugify
+        files = dict(self._iter_files())
+        plan: list[dict] = []
+        renames: dict[str, str] = {}
+        taken = {os.path.basename(k) for k in files}
+        for key, fp in sorted(files.items()):
+            base = os.path.basename(key)
+            stem = base[:-3]
+            if re.match(r"\d{4}-\d{2}-\d{2}$", stem) or stem in ("MEMORY", "INDEX"):
+                continue
+            text = open(fp, encoding="utf-8", errors="ignore").read()
+            fixes: list[str] = []
+            m = _FRONTMATTER_RE.match(text)
+            if m and '"---' in m.group(0):
+                inner = text[m.end():].lstrip("\n")
+                if _FRONTMATTER_RE.match(inner):
+                    text, m = inner, _FRONTMATTER_RE.match(inner)
+                    fixes.append("unwrap-nested")
+            if not m:
+                pref = stem.split("_", 1)[0]
+                if pref not in self._CARD_TYPES:
+                    continue                  # not a card by convention; leave it
+                first = next((ln.strip("# ").strip() for ln in text.splitlines()
+                              if ln.strip()), stem)
+                text = ("---\n" f"name: {_slugify(stem)}\n"
+                        f"description: {json_dumps(first[:150])}\n"
+                        f"metadata:\n  type: {pref}\n---\n\n" + text.lstrip())
+                m = _FRONTMATTER_RE.match(text)
+                fixes.append("add-frontmatter")
+            block = m.group(0)
+            body = text[m.end():]
+            name = parse_frontmatter_name(text) or ""
+            ftype = parse_frontmatter_type(text)
+            desc_m = re.search(r"^description:[ \t]*(.+)$", block, re.M)
+            desc = desc_m.group(1).strip().strip("\"'") if desc_m else ""
+            if ftype is None:
+                # prefix only: "any word in the description" typed a Supabase
+                # gotcha as `user` because its text mentioned users
+                bare = re.sub(r"^card[-_]\d{8}[-_](\d{6}[-_])?", "", stem).lower()
+                probes = (name.lower(), desc.lower(), bare)
+                ftype = next((t for t in self._CARD_TYPES
+                              if any(re.match(rf"{t}[-_:\s]", p) for p in probes)), "project")
+                block = block.rstrip()[:-3].rstrip("\n") + f"\nmetadata:\n  type: {ftype}\n---\n"
+                fixes.append(f"type={ftype}")
+            # Only rewrite a name nothing can be linking to on purpose: empty,
+            # the placeholder "card", or a sentence. A working slug (any
+            # separator style) is what [[links]] target — renaming it orphans them.
+            # Healthy cards keep their name even when it is a sentence: links
+            # still reach them by filename stem, and rewriting them would only
+            # churn files (and reset their decay clock) for no recall gain.
+            legacy = base.startswith(("card-", "card_"))
+            slug = name
+            if (not name or name == "card"
+                    or (legacy and not re.fullmatch(r"[\w.-]+", name))):
+                src = name if name and name != "card" else ""
+                if not src and not legacy:
+                    src = stem               # convention: name = stem, dashed
+                if not src:
+                    src = next((ln.strip("# ").strip() for ln in body.splitlines()
+                                if ln.strip()), "") or desc
+                slug = _slugify(src)
+                if slug and not slug.startswith(ftype + "-"):
+                    slug = f"{ftype}-{slug}"
+                if slug and slug != name:
+                    if re.search(r"^name:.*$", block, re.M):
+                        block = re.sub(r"^name:.*$", f"name: {slug}", block, count=1, flags=re.M)
+                    else:
+                        block = "---\n" + f"name: {slug}\n" + block[4:]
+                    fixes.append(f"name={slug}")
+            new_base = base
+            if base.startswith(("card-", "card_")) and slug:
+                want = _slugify(slug).replace("-", "_")
+                if not want.startswith(ftype + "_"):
+                    want = f"{ftype}_{want}"
+                new_base, n = f"{want}.md", 2
+                while new_base in taken:
+                    new_base, n = f"{want}_{n}.md", n + 1
+                taken.discard(base); taken.add(new_base)
+                renames[base] = new_base
+                fixes.append("rename")
+            if fixes:
+                plan.append({"file": key, "new_file": new_base, "fixes": fixes,
+                             "_fp": fp, "_text": block + body})
+        if apply:
+            every: list[str] = []
+            for item in plan:
+                fp = item["_fp"]
+                st = os.stat(fp)
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(item["_text"])
+                # keep the card's age: a repair is not new information, and
+                # temporal decay reads mtime
+                os.utime(fp, (st.st_atime, st.st_mtime))
+                if item["new_file"] != os.path.basename(fp):
+                    os.rename(fp, os.path.join(os.path.dirname(fp), item["new_file"]))
+            if renames:
+                # Every .md under the tenant, NOT just indexed ones: MEMORY.md is
+                # usually in ignore_globs, and it is exactly where pointers live.
+                every = [os.path.join(r, n) for r, ds, ns in os.walk(self.dir)
+                         for n in ns if n.endswith(".md")
+                         if not any(part.startswith(".") for part in
+                                    os.path.relpath(r, self.dir).split(os.sep) if part != ".")]
+                for fp in every:
+                    t = open(fp, encoding="utf-8", errors="ignore").read()
+                    t2 = t
+                    for old, new in renames.items():
+                        t2 = t2.replace(old, new).replace(f"[[{old[:-3]}", f"[[{new[:-3]}")
+                    if t2 != t:
+                        st = os.stat(fp)
+                        with open(fp, "w", encoding="utf-8") as f:
+                            f.write(t2)
+                        os.utime(fp, (st.st_atime, st.st_mtime))
+            # mtime was preserved on purpose (decay), so the incremental
+            # reindex cannot see these edits by mtime. Invalidate them in the
+            # index instead (-1 = "re-read me", and not logged as an edit).
+            touched = [os.path.relpath(it["_fp"], self.dir) for it in plan]
+            touched += [os.path.relpath(fp, self.dir) for fp in every]
+            con = self._connect()
+            try:
+                con.executemany("UPDATE files SET mtime=-1 WHERE path=?",
+                                [(k,) for k in touched] +
+                                [(os.path.basename(k),) for k in touched])
+                con.commit()
+            finally:
+                con.close()
+        for item in plan:
+            item.pop("_fp", None); item.pop("_text", None)
+        return plan
 
     def _mmr(self, con, ranked: list[int], k: int) -> list[int]:
         if self.cfg.mmr_lambda >= 1.0 or len(ranked) <= k:

@@ -27,10 +27,10 @@ the wrong trade.
 
 - **Your Markdown files are the source of truth.** Open them, edit them, `git diff`
   them. The SQLite index is a derived cache — delete it and it rebuilds from the files.
-- **One process serves your whole fleet.** Each agent gets an isolated memory
-  namespace via its own directory — not a separate daemon per agent.
-- **One embedding model, loaded once.** Shared across every tenant. ~130 MB resident,
-  not multiplied by your agent count.
+- **One library, many tenants.** Each agent gets an isolated memory namespace via its
+  own directory. A process loads each embedding model once and shares it across
+  every tenant it touches; with the stdio MCP server that means one small process
+  per agent session, not a central daemon.
 - **No LLM in the loop.** Ingest and retrieval are deterministic. Your agent *is* the
   LLM — it doesn't need a second one to remember.
 - **Local, private, offline.** [FastEmbed](https://github.com/qdrant/fastembed) runs
@@ -178,6 +178,22 @@ vault.reindex()
 for hit in vault.search("where are credentials stored"):
     print(hit["score"], hit["file"], hit["snippet"])
 ```
+
+## Keeping a tenant healthy
+
+`cogvault doctor --tenant DIR` reports what silently degrades recall: cards with
+no frontmatter or type, legacy timestamp filenames, frontmatter wrapped inside
+frontmatter, duplicate `name:` slugs, and `[[links]]` that resolve to nothing.
+Links resolve by frontmatter `name:`, filename stem, either separator style, and
+with or without the card-type prefix; links inside code and paths to files outside
+the tenant are not counted.
+
+`cogvault repair --tenant DIR` fixes the mechanical half (dry run by default,
+`--apply` to write): unwraps nested frontmatter, infers a missing type, renames
+`card-<timestamp>-….md` to `<type>_<slug>.md` and rewrites every reference to it
+(MEMORY.md included), and adds minimal frontmatter to `<type>_*.md` cards that
+lack it. Healthy cards are left alone, and repaired cards keep their mtime so
+temporal decay is not reset.
 
 ## Effectiveness logging
 

@@ -1,4 +1,4 @@
-"""cogvault CLI: index | search | mcp | stats | analyze | doctor."""
+"""cogvault CLI: index | search | mcp | stats | analyze | doctor | repair."""
 from __future__ import annotations
 import argparse, json, os, sys, statistics
 from .core import Vault, Config
@@ -48,6 +48,10 @@ def main(argv=None):
     dr = sub.add_parser("doctor", help="Check a tenant for integrity problems "
                                         "that silently degrade recall")
     add_common(dr); dr.add_argument("--json", action="store_true")
+
+    rp = sub.add_parser("repair", help="Fix the mechanical doctor findings "
+                                       "(dry run unless --apply)")
+    add_common(rp); rp.add_argument("--apply", action="store_true")
 
     an = sub.add_parser("analyze", help="Effectiveness report from the query log")
     an.add_argument("--tenant", help="Filter to one tenant (default: all)")
@@ -150,6 +154,16 @@ def _doctor(v, as_json: bool) -> int:
 def _run(a, v, cfg) -> int:
     if a.cmd == "doctor":
         return _doctor(v, a.json)
+    if a.cmd == "repair":
+        plan = v.repair(apply=a.apply)
+        for it in plan:
+            arrow = f" → {it['new_file']}" if it["new_file"] != os.path.basename(it["file"]) else ""
+            print(f"  {it['file']}{arrow}\n      {', '.join(it['fixes'])}")
+        print(f"\n{len(plan)} cards " + ("repaired." if a.apply else
+              "would change (dry run; re-run with --apply)."))
+        if a.apply and plan:
+            print(json.dumps(v.reindex()))
+        return 0
     if a.cmd == "index":
         print(json.dumps(v.reindex()))
     elif a.cmd == "search":
