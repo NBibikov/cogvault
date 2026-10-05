@@ -17,5 +17,9 @@
     "rag",
     "hybrid-search",
     "local-first"
-  ]
+  ],
+  "documentationUrl": "https://github.com/NBibikov/cogvault#readme",
+  "supportUrl": "https://github.com/NBibikov/cogvault/issues",
+  "privacyPolicyUrl": "https://github.com/NBibikov/cogvault/blob/main/PRIVACY.md",
+  "termsOfServiceUrl": "https://github.com/NBibikov/cogvault/blob/main/LICENSE"
 }
