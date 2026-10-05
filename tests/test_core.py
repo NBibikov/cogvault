@@ -1227,3 +1227,47 @@ def test_links_resolve_without_type_prefix(tmpvault):
     res = v.search("release zebra checklist", k=1)
     assert res[0]["related"] == ["feedback_build_means_fastlane_beta.md"]
     assert v.diagnose()["ghost_links"] == []
+
+
+def test_eval_command_scores_golden_set(tmpvault, capsys):
+    import json
+    from cogvault.cli import main
+    _write(tmpvault, "project_pump.md", "The heat pump compressor trips when the sensor freezes.")
+    _write(tmpvault, "project_bread.md", "Sourdough needs a twelve hour proof.")
+    with open(os.path.join(tmpvault, ".cogvault-golden.jsonl"), "w") as f:
+        f.write(json.dumps({"query": "why does the compressor stop", "relevant": ["project_pump.md"]}) + "\n")
+        f.write(json.dumps({"query": "unknown topic", "relevant": []}) + "\n")
+    main(["index", "--tenant", tmpvault]); capsys.readouterr()
+    main(["eval", "--tenant", tmpvault, "--json"])
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["scored"] == 1 and rep["gaps"] == 1 and rep["hit@1"] == 1.0
+
+
+def test_summary_chunk_indexed_and_deduped(tmpvault):
+    _write(tmpvault, "feedback_deploy.md", "---\nname: feedback-deploy-to-prod\n"
+           "description: Backend always deploys straight to prod\nmetadata:\n  type: feedback\n---\n\n"
+           + "\n\n".join(f"Paragraph {i} about unrelated build chores and lint." for i in range(30)))
+    v = Vault(tmpvault)
+    v.reindex()
+    con = v._connect()
+    texts = [r[0] for r in con.execute("SELECT text FROM chunks ORDER BY id")]
+    con.close()
+    assert texts[0] == "feedback-deploy-to-prod — Backend always deploys straight to prod"
+    res = v.search("деплой на прод deploy prod", k=5)
+    assert [r["file"] for r in res] == ["feedback_deploy.md"]
+
+
+def test_older_process_does_not_rebuild_newer_index(tmpvault, monkeypatch):
+    import cogvault
+    _write(tmpvault, "a.md", "alpha fact")
+    v = Vault(tmpvault)
+    v.reindex()
+    con = v._connect()
+    con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('writer','99.0.0')")
+    con.execute("UPDATE meta SET value='old-chunker' WHERE key='chunker'")
+    con.commit(); con.close()
+    r = v.reindex()
+    assert r.get("skipped") and r["files_reindexed"] == 0
+    con = v._connect()
+    assert con.execute("SELECT value FROM meta WHERE key='chunker'").fetchone()[0] == "old-chunker"
+    con.close()

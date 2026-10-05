@@ -44,7 +44,7 @@ TENANT_CONFIG_NAME = ".cogvault.toml"
 _TENANT_CONFIG_KEYS = {
     "model": str, "dim": int, "chunk_chars": int, "rrf_k": int,
     "vec_pool": int, "fts_pool": int, "half_life_days": float, "mmr_lambda": float,
-    "snippet_chars": int, "query_prefix": str, "doc_prefix": str, "evergreen_re": str, "recursive": bool,
+    "snippet_chars": int, "fts_stem": bool, "summary_chunk": bool, "query_prefix": str, "doc_prefix": str, "evergreen_re": str, "recursive": bool,
     "strip_frontmatter": bool, "ignore_globs": tuple,
 }
 
@@ -176,6 +176,15 @@ class Config:
     # Asymmetric models (the e5 family) are trained with "query: "/"passage: "
     # prefixes and lose several points of recall without them. None = use the
     # model's known prefixes (see _MODEL_PREFIXES), "" = force none.
+    # Experimental: prefix-stem Cyrillic terms in the BM25 channel (see
+    # _stem_term). Off until a judged eval shows it helps.
+    fts_stem: bool = False
+    # Index "name — description" from the frontmatter as its own chunk. Real
+    # agent queries read like card titles ("деплой на прод"); a judged set of
+    # 65 real queries (2026-10-05) put this at hit@5 0.923 vs 0.877 without it
+    # (better on 7 queries, worse on 3). Search returns one hit per card, so
+    # the extra chunk never duplicates a result.
+    summary_chunk: bool = True
     query_prefix: str | None = None
     doc_prefix: str | None = None
     db_dir: str = ""                 # "" = ~/.cache/cogvault; set to a dir to override
@@ -196,6 +205,11 @@ class Config:
 # under the wrong model name — permanent silent recall degradation.
 _EMBEDDERS: dict = {}
 _EMBEDDERS_LOCK = threading.Lock()
+def _pkg_version() -> str:
+    from . import __version__
+    return __version__
+
+
 def embed_backend() -> str:
     """Identity of the embedding BACKEND, stamped into each index's meta.
 
@@ -350,10 +364,24 @@ def _split_to_budget(text: str, model: str, budget: int) -> list[str]:
     return pieces
 
 
-def chunker_id(model: str) -> str:
+def chunker_id(model: str, summary: bool = True) -> str:
     """Stamped into meta: a chunker change re-chunks (and so re-embeds) the
     tenant, just like a model change does."""
-    return f"tok-v1/{max_tokens(model)}"
+    return f"tok-v1/{max_tokens(model)}" + ("+sum" if summary else "")
+
+
+def card_summary(text: str) -> str | None:
+    """`name — description` from leading frontmatter, or None."""
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return None
+    parts = []
+    for key in ("name", "description"):
+        f = re.search(rf"^{key}:[ \t]*(.+)$", m.group(0), re.M)
+        v = f.group(1).strip().strip("\"'").strip() if f else ""
+        if v:
+            parts.append(v)
+    return " — ".join(parts) or None
 
 
 def _embedder(model: str):
@@ -551,7 +579,19 @@ of on or our so that the their them then there these they this to was we what wh
 where which who why will with you your
 """.split())
 
-def _fts_query(query: str) -> str:
+def _stem_term(t: str) -> str:
+    """Crude prefix stem for inflected (Cyrillic) words: FTS5's unicode61
+    tokenizer has no morphology, so "тестів" never matched "тест"/"тести".
+    Long Cyrillic words lose up to two trailing letters and become a prefix
+    query; Latin terms are left exact."""
+    if re.search(r"[а-яіїєґ]", t) and len(t) >= 6:
+        return f'"{t[:-2]}"*'
+    if re.search(r"[а-яіїєґ]", t) and len(t) == 5:
+        return f'"{t[:-1]}"*'
+    return f'"{t}"'
+
+
+def _fts_query(query: str, stem: bool = False) -> str:
     """Build a safe FTS5 MATCH expression: each meaningful term double-quoted
     (so FTS5 keywords like OR/NEAR/AND and punctuation can't break parsing),
     stopwords dropped. Returns '' when nothing meaningful remains."""
@@ -560,6 +600,8 @@ def _fts_query(query: str) -> str:
     if not terms:                                  # all-stopword query: keep originals
         terms = re.findall(r"\w+", query.lower())
     # double-quote each term; FTS5 treats a quoted token as a literal phrase
+    if stem:
+        return " OR ".join(_stem_term(t) for t in terms)
     return " OR ".join(f'"{t}"' for t in terms)
 
 
@@ -655,7 +697,7 @@ class Vault:
         prev = {k: v for k, v in con.execute("SELECT key,value FROM meta")}
         if not prev:
             want = {"model": self.cfg.model, "dim": str(self.cfg.dim),
-                    "backend": embed_backend(), "chunker": chunker_id(self.cfg.model),
+                    "backend": embed_backend(), "chunker": chunker_id(self.cfg.model, self.cfg.summary_chunk),
                     "schema": str(SCHEMA_VERSION)}
             con.executemany("INSERT INTO meta(key,value) VALUES(?,?)", want.items())
         con.commit()
@@ -726,7 +768,7 @@ class Vault:
         (pre-0.10 index) IS stale: those chunks were packed past the model's
         token window, which is exactly what the rebuild fixes."""
         row = con.execute("SELECT value FROM meta WHERE key='chunker'").fetchone()
-        return (row[0] if row else None) != chunker_id(self.cfg.model)
+        return (row[0] if row else None) != chunker_id(self.cfg.model, self.cfg.summary_chunk)
 
     def _iter_files(self):
         """Yield (key, fullpath) for every .md to index. key is the file's path
@@ -774,10 +816,12 @@ class Vault:
         ftype = parse_frontmatter_type(text)
         fname = parse_frontmatter_name(text)
         links = parse_wikilinks(text)
+        summary = card_summary(text) if self.cfg.summary_chunk else None
         if self.cfg.strip_frontmatter:
             text = strip_frontmatter(text)
-        chunks = fit_to_tokens(chunk_markdown(text, self.cfg.chunk_chars),
-                               self.cfg.model, self._token_budget())
+        chunks = fit_to_tokens(
+            ([summary] if summary else []) + chunk_markdown(text, self.cfg.chunk_chars),
+            self.cfg.model, self._token_budget())
         out: list = []
         missing: list[int] = []
         for ch in chunks:
@@ -834,9 +878,31 @@ class Vault:
                             [(key, t) for t in links])
         return n_chunks, n_new, n_cache, fname
 
+    def _written_by_newer(self, con) -> str | None:
+        """Version string of a NEWER cogvault that last rebuilt this index, else
+        None. Long-lived MCP servers keep the code they started with; after an
+        upgrade they disagree with the index on model/chunker and, unguarded,
+        rebuild it back to the old scheme — then the new code rebuilds it
+        forward again (seen during the 0.10 rollout). Older code must defer."""
+        row = con.execute("SELECT value FROM meta WHERE key='writer'").fetchone()
+        if not row:
+            return None
+        from . import __version__
+        def _v(x):
+            return tuple(int(p) for p in re.findall(r"\d+", x)[:3])
+        return row[0] if _v(row[0]) > _v(__version__) else None
+
     # ---- incremental indexing (fleet-safe: only touches changed files) ----
     def reindex(self, full: bool = False) -> dict:
         con = self._connect()
+        newer = self._written_by_newer(con)
+        if newer and (self._model_mismatch(con) or self._chunker_stale(con)):
+            con.close()
+            print(f"cogvault: {self.dir} was built by cogvault {newer}; this "
+                  f"process is older and will not rebuild it. Restart it to pick "
+                  f"up the new code.", file=sys.stderr)
+            return {"files_total": 0, "files_reindexed": 0, "chunks": 0,
+                    "embedded": 0, "cached": 0, "skipped": f"index built by {newer}"}
         ev_re = re.compile(self.cfg.evergreen_re, re.IGNORECASE)
         con.isolation_level = None
         try:
@@ -888,7 +954,8 @@ class Vault:
                     con.execute(f"DELETE FROM {tbl}")
                 for kv in {"model": self.cfg.model, "dim": str(self.cfg.dim),
                            "backend": embed_backend(),
-                           "chunker": chunker_id(self.cfg.model),
+                           "chunker": chunker_id(self.cfg.model, self.cfg.summary_chunk),
+                           "writer": _pkg_version(),
                            "schema": str(SCHEMA_VERSION)}.items():
                     con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", kv)
                 known = {}
@@ -1026,7 +1093,7 @@ class Vault:
                 (qv, self.cfg.vec_pool * over)).fetchall()
             vec_dist = {cid: d for cid, d in vec_hits}
             vec_rows = [(cid,) for cid, _ in vec_hits]
-            terms = _fts_query(query)
+            terms = _fts_query(query, stem=self.cfg.fts_stem)
             fts_rows = []
             if terms:
                 try:

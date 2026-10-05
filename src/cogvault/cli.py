@@ -53,6 +53,15 @@ def main(argv=None):
                                        "(dry run unless --apply)")
     add_common(rp); rp.add_argument("--apply", action="store_true")
 
+    ev = sub.add_parser("eval", help="Score recall against a judged query set "
+                                     "(<tenant>/.cogvault-golden.jsonl)")
+    add_common(ev)
+    ev.add_argument("--golden", default=None,
+                    help="JSONL of {query, relevant:[file,...]} (default: "
+                         "<tenant>/.cogvault-golden.jsonl)")
+    ev.add_argument("-k", type=int, default=5)
+    ev.add_argument("--json", action="store_true")
+
     an = sub.add_parser("analyze", help="Effectiveness report from the query log")
     an.add_argument("--tenant", help="Filter to one tenant (default: all)")
     an.add_argument("--json", action="store_true")
@@ -154,6 +163,8 @@ def _doctor(v, as_json: bool) -> int:
 def _run(a, v, cfg) -> int:
     if a.cmd == "doctor":
         return _doctor(v, a.json)
+    if a.cmd == "eval":
+        return _eval(a, v)
     if a.cmd == "repair":
         plan = v.repair(apply=a.apply)
         for it in plan:
@@ -189,6 +200,43 @@ def _run(a, v, cfg) -> int:
     elif a.cmd == "mcp":
         from .mcp_server import serve
         serve(a.tenant, cfg)
+    return 0
+
+
+def _eval(a, v) -> int:
+    """hit@1 / hit@k / MRR over a judged set of REAL queries. The set lives in
+    the tenant (it is made of private queries) — never in this repo. Queries
+    judged to have no answer in memory are counted as gaps, not scored."""
+    os.environ["COGVAULT_LOG"] = "off"        # scoring must not pollute analyze
+    path = a.golden or os.path.join(v.dir, ".cogvault-golden.jsonl")
+    if not os.path.exists(path):
+        print(f"no golden set at {path}", file=sys.stderr)
+        return 2
+    rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+    scored, gaps, misses = [], 0, []
+    for r in rows:
+        rel = [os.path.basename(x) if not v.cfg.recursive else x
+               for x in r.get("relevant") or []]
+        if not rel:
+            gaps += 1
+            continue
+        got = [x["file"] for x in v.search(r["query"], k=max(a.k, 10))]
+        rank = next((i + 1 for i, f in enumerate(got) if f in rel), None)
+        scored.append(rank)
+        if rank != 1:
+            misses.append((r["query"], rel[0], got[0] if got else None, rank))
+    n = len(scored)
+    rep = {"tenant": v.dir, "queries": len(rows), "scored": n, "gaps": gaps,
+           "hit@1": round(sum(1 for x in scored if x == 1) / n, 3) if n else None,
+           f"hit@{a.k}": round(sum(1 for x in scored if x and x <= a.k) / n, 3) if n else None,
+           "mrr@10": round(sum(1 / x for x in scored if x) / n, 3) if n else None}
+    if a.json:
+        print(json.dumps({**rep, "misses": misses}, ensure_ascii=False, indent=2))
+        return 0
+    print(f"cogvault eval: {rep['tenant']}  ({n} scored, {gaps} gaps)")
+    print(f"  hit@1 {rep['hit@1']}   hit@{a.k} {rep[f'hit@{a.k}']}   MRR@10 {rep['mrr@10']}")
+    for q, want, top, rank in misses[:10]:
+        print(f"  · rank {rank or '>10'}: {q[:50]!r}  want {want}  got {top}")
     return 0
 
 

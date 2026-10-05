@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.11.0 — 2026-10-05 — judged on real queries
+
+- **`cogvault eval`** scores recall against `<tenant>/.cogvault-golden.jsonl`
+  (`{query, relevant:[file,...]}`; empty `relevant` = a known memory gap). The
+  set lives with the tenant, never in this repo — it is made of private queries.
+- **What the real-query set showed.** 65 queries sampled from the query log,
+  judged against the actual cards (answers searched outside the result pool too).
+  The 0.10 synthetic gain (hit@1 +0.2) did NOT reproduce: every configuration
+  landed within noise (paired bootstrap 95% CIs on ΔMRR all span zero). Real
+  agent queries read like card titles, which the old 128-token truncation
+  happened to serve well. e5-small + token-window chunks stays — it is what
+  makes facts deep inside long cards reachable at all — and:
+- **Card summary chunk** (`summary_chunk`, on by default): frontmatter
+  `name — description` indexed as its own chunk. hit@5 0.877 → 0.923 on the real
+  set (better on 7 queries, worse on 3), found 4 answers the pre-0.10 index
+  never returned. Part of the `chunker` stamp, so tenants rebuild once.
+- **Older processes never rebuild a newer index.** Indexes record the cogvault
+  version that rebuilt them (`writer`). A long-lived MCP server still running old
+  code now skips the rebuild with a warning instead of reverting the index to
+  its own model/chunker — the flapping seen during the 0.10 rollout.
+- `fts_stem` (prefix-stemming Cyrillic terms in BM25) added as an experiment,
+  **off**: on the real set it was neutral-to-worse (hit@1 0.569 → 0.554).
+
 ## 0.10.0 — 2026-10-05 — the vector channel could only see a third of memory
 
 - **Chunks are fitted to the model's token window.** `paraphrase-multilingual-MiniLM`
