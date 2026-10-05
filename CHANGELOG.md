@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.2 — 2026-10-05 — Claude Code plugin
+
+- **Claude Code plugin.** The repo is a plugin marketplace:
+  `/plugin marketplace add NBibikov/cogvault`, `/plugin install cogvault@cogvault`.
+  It runs the MCP server through `uvx` (tenant `~/.cogvault/memory`, override with
+  `COGVAULT_TENANT`) and ships a `memory` skill (when to recall, what to record),
+  `/cogvault:remember` and `/cogvault:doctor`.
+- **Fix: `cogvault_record` with a `~` tenant path.** MCP clients start the server
+  without a shell, so `--tenant ~/memory` arrived unexpanded: recall worked, but
+  record wrote to the literal path and failed. The server now writes to the
+  vault's resolved directory.
+- README: 30-second start (plugin, one-line MCP, JSON for Desktop/Cursor, pointing
+  at Claude Code's auto-memory) and an illustrative session figure.
+
 ## 0.11.1 — 2026-10-05 — on PyPI and the MCP Registry
 
 - **Published to PyPI** (`pip install cogvault`, `uvx cogvault mcp --tenant DIR`) and

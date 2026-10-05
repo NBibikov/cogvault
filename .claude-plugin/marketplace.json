@@ -1,0 +1,15 @@
+{
+  "name": "cogvault",
+  "owner": {
+    "name": "Nick Bibikov",
+    "url": "https://github.com/NBibikov"
+  },
+  "description": "cogvault \u2014 local Markdown memory for Claude Code",
+  "plugins": [
+    {
+      "name": "cogvault",
+      "source": "./plugin",
+      "description": "Local hybrid-search memory over plain Markdown: recall and record across sessions, offline, no LLM in the loop."
+    }
+  ]
+}

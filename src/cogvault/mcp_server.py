@@ -119,7 +119,9 @@ def _write_card(tenant_dir: str, content: str, title: str | None = None,
 class MCPServer:
     def __init__(self, tenant_dir: str, cfg: Config):
         self.vault = Vault(tenant_dir, cfg)
-        self.tenant_dir = tenant_dir
+        # The vault's resolved dir, not the raw argument: an MCP client launches
+        # without a shell, so "~/memory" arrives unexpanded and card writes failed.
+        self.tenant_dir = self.vault.dir
         self.tools = {
             "cogvault_recall": {
                 "description": "Search this agent's persistent memory. Pass a natural-language "

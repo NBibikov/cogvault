@@ -14,9 +14,63 @@
 [![PyPI](https://img.shields.io/pypi/v/cogvault?style=flat-square&color=0d9488)](https://pypi.org/project/cogvault/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.NBibikov%2Fcogvault-312e81?style=flat-square)](https://registry.modelcontextprotocol.io/?search=cogvault)
 
-**[Why](#why)** · **[How it works](#how-it-works)** · **[Benchmark](#benchmark)** · **[Install](#install)** · **[Quickstart](#quickstart)** · **[MCP](#as-an-mcp-server-claude-code-cursor-any-mcp-client)** · **[Fleets](#multi-tenant-fleets)**
+**[Get started](#get-started-in-30-seconds)** · **[Why](#why)** · **[Compared](#compared-to)** · **[How it works](#how-it-works)** · **[Benchmark](#benchmark)** · **[Install](#install)** · **[Quickstart](#quickstart)** · **[MCP](#as-an-mcp-server-claude-code-cursor-any-mcp-client)** · **[Fleets](#multi-tenant-fleets)**
 
 </div>
+
+## Get started in 30 seconds
+
+**Claude Code plugin** — MCP server plus a skill that tells the agent when to recall and
+when to record:
+
+```text
+/plugin marketplace add NBibikov/cogvault
+/plugin install cogvault@cogvault
+```
+
+Memory lives in `~/.cogvault/memory` (set `COGVAULT_TENANT` to change it). The plugin
+adds `/cogvault:remember` and `/cogvault:doctor`.
+
+**Any MCP client, one line** (needs [uv](https://docs.astral.sh/uv/)):
+
+```bash
+claude mcp add cogvault -- uvx cogvault mcp --tenant ~/agent/memory
+```
+
+<details>
+<summary>Claude Desktop, Cursor, Windsurf, Cline — JSON config</summary>
+
+Add to `claude_desktop_config.json`, `~/.cursor/mcp.json`, or your client's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "cogvault": {
+      "command": "uvx",
+      "args": ["cogvault", "mcp", "--tenant", "~/agent/memory"]
+    }
+  }
+}
+```
+
+</details>
+
+**Already have Markdown memory?** Point the tenant at it — nothing to import. Claude
+Code's auto-memory works as-is (frontmatter `type`, `[[links]]` and all):
+
+```bash
+M=~/.claude/projects/<project>/memory
+uvx cogvault index  --tenant $M --ignore MEMORY.md   # first pass embeds, later passes are incremental
+uvx cogvault search --tenant $M "how do we deploy"
+```
+
+The MCP server indexes on start by itself; the CLI `search` reads the existing index.
+`--ignore MEMORY.md` keeps the index file from competing with the cards it points to.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/demo-dark.svg">
+  <img alt="A Claude Code session: the agent calls cogvault_recall and gets a feedback card with a fix, then cogvault_record saves a new card" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/demo-light.svg">
+</picture>
 
 ---
 
@@ -39,6 +93,27 @@ the wrong trade.
   LLM — it doesn't need a second one to remember.
 - **Local, private, offline.** [FastEmbed](https://github.com/qdrant/fastembed) runs
   on-device. Nothing leaves your machine.
+
+## Compared to
+
+Checked against each project's README and docs on 2026-10-05.
+
+| | cogvault | [basic-memory](https://github.com/basicmachines-co/basic-memory) | [mem0](https://github.com/mem0ai/mem0) | [Graphiti](https://github.com/getzep/graphiti) | [Letta Code](https://github.com/letta-ai/letta-code) |
+|---|---|---|---|---|---|
+| Source of truth | Markdown files | Markdown files | Vector DB (Qdrant / pgvector) | Graph DB (Neo4j, FalkorDB, …) | Markdown in a git repo per agent |
+| LLM needed to store or recall | No | No (optional reranker) | Yes by default (`add()` extracts facts) | Yes to ingest | Yes — the agent edits its memory |
+| Retrieval | Vector + BM25, RRF, decay, MMR | Full-text + vector, optional rerank | Semantic + BM25 + entities | Semantic + BM25 + graph | File search; hybrid optional |
+| Infra | One process, SQLite file | One process, SQLite (Postgres optional) | Library, or Docker + Postgres server | A graph database | Letta backend |
+
+**Pick something else when:** you want an LLM to distil and merge facts for you (mem0),
+relationships between entities are the point (Graphiti), you want the agent to manage its
+own memory (Letta), or you want a richer notes app around the same Markdown idea, with
+Obsidian sync and a hosted option (basic-memory — the closest to cogvault).
+
+**Pick cogvault when:** you run several agents and want each one's memory isolated in its
+own directory behind one process; you want recall to be deterministic and offline; and you
+want to *measure* it — `cogvault eval` scores recall on your agents' real queries and
+`cogvault analyze` lists what they tried to recall and couldn't.
 
 ## How it works
 

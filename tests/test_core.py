@@ -694,6 +694,22 @@ def test_record_event_logged(tmpvault, monkeypatch):
     assert rec["tenant"].count("/") == 1          # parent/basename label, not bare
 
 
+def test_record_with_unexpanded_tilde_tenant(tmp_path, monkeypatch):
+    """MCP clients (plugin .mcp.json, desktop configs) start the server without a
+    shell, so `--tenant ~/memory` arrives with a literal `~`. Recall worked (the
+    Vault expands it) but record wrote to the raw path and failed."""
+    from cogvault.mcp_server import MCPServer
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("COGVAULT_LOG", "off")
+    srv = MCPServer("~/memory", Config())
+    resp = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "cogvault_record",
+                                  "arguments": {"content": "Tilde tenants work.",
+                                                "title": "tilde tenant"}}})
+    assert "error" not in resp
+    assert (tmp_path / "memory" / "tilde_tenant.md").exists()
+
+
 def test_empty_recall_nudges_record(tmpvault):
     """A no-hit recall is when the agent knows a card is missing — the MCP
     response must point at cogvault_record, not dead-end with 'not found'."""

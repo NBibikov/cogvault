@@ -45,7 +45,12 @@ THEMES = {
 
 def t(x, y, s, size=14, fill="ink", weight=400, family=SANS, anchor="start", extra=""):
     return (f'<text x="{x}" y="{y}" font-family="{family}" font-size="{size}" '
-            f'font-weight="{weight}" fill="{{{fill}}}" text-anchor="{anchor}" {extra}>{escape(s)}</text>')
+            f'font-weight="{weight}" fill="{{{fill}}}" text-anchor="{anchor}" {extra}>{_lit(s)}</text>')
+
+
+def _lit(s):
+    """Escape text; literal braces become entities so they never read as tokens."""
+    return escape(s).replace("{", "&#123;").replace("}", "&#125;")
 
 
 def mono(x, y, s, size=13, fill="ink2", **kw):
@@ -331,6 +336,48 @@ def fleet():
     return frame(W, H, "\n".join(b))
 
 
+# ------------------------------------------------------------------ demo -----
+def demo():
+    """A Claude Code session using the two tools. Output formats match
+    mcp_server.py: recall → `[score] file`, text, `Related:`; record → status JSON."""
+    W, H = 1200, 520
+    L = [  # (indent, text, color, weight, step) — step = when the line appears
+        (0, "› why does the worker keep restarting?", "ink", 700, 0),
+        (0, "● cogvault_recall(query=\"worker restart loop\", type=\"feedback\")", "indigo", 600, 1),
+        (1, "⎿ [0.0331] feedback_worker_crashloop.md", "amber", 600, 2),
+        (2, "launchd KeepAlive restarts the worker when it crashes on a missing .env.", "ink2", 400, 2),
+        (2, "Fix: set EnvironmentVariables in the plist. Why: 3 hours lost, Sep 12.", "ink2", 400, 2),
+        (2, "Related: reference_launchd_jobs", "muted", 400, 2),
+        (0, "● It's the launchd KeepAlive loop from September — the worker dies on a", "ink", 400, 3),
+        (1, "missing .env and launchd brings it back. Put the env into the plist.", "ink", 400, 3),
+        (0, "", "ink", 400, 3),
+        (0, "› remember: deploys always go through the staging flag first", "ink", 700, 4),
+        (0, "● cogvault_record(title=\"deploy via staging flag\", type=\"feedback\")", "indigo", 600, 5),
+        (1, "⎿ {\"status\": \"ok\", \"file\": \"deploy_via_staging_flag.md\"}", "teal", 600, 6),
+        (2, "a plain Markdown card — open it, edit it, git diff it", "muted", 400, 6),
+    ]
+    steps = 7
+    style = "".join(
+        f".s{i} {{ animation: show{i} 16s ease-out infinite; }}"
+        f"@keyframes show{i} {{ 0%, {i * 9}% {{ opacity: 0; transform: translateY(6px); }} "
+        f"{i * 9 + 3}%, 92% {{ opacity: 1; transform: none; }} 100% {{ opacity: 0; }} }}"
+        for i in range(1, steps))
+    b = [box(24, 24, W - 48, H - 48, r=16, fill="surface", stroke="border")]
+    for i, c in enumerate(("#ff5f57", "#febc2e", "#28c840")):
+        b.append(f'<circle cx="{52 + i*22}" cy="52" r="6.5" fill="{c}"/>')
+    b.append(mono(W / 2, 57, "claude — ~/agents/backend", 13, fill="muted", anchor="middle"))
+    b.append(f'<line x1="24" y1="78" x2="{W-24}" y2="78" stroke="{{border}}"/>')
+    y = 118
+    for ind, text, col, wt, step in L:
+        cls = f'class="s{step}"' if step else ""
+        if text:
+            b.append(f'<g {cls}>' + t(56 + ind * 26, y, text, 15, fill=col, weight=wt, family=MONO) + "</g>")
+        y += 28
+    b.append(t(W - 56, H - 46, "illustrative session · formats match the real tool output", 12,
+               fill="muted", anchor="end"))
+    return frame(W, H, "\n".join(b), style=style)
+
+
 # ------------------------------------------------------------- benchmark -----
 BENCH_SERIES = (  # key in benchmark.json, legend label, color token (validated order)
     ("e5_summary", "e5-small + summary chunk (fleet config)", "s1"),
@@ -391,7 +438,7 @@ def benchmark():
 
 
 # ------------------------------------------------------------------ build ----
-FIGURES = {"hero": hero, "architecture": architecture, "recall": recall, "fleet": fleet, "benchmark": benchmark}
+FIGURES = {"hero": hero, "demo": demo, "architecture": architecture, "recall": recall, "fleet": fleet, "benchmark": benchmark}
 
 
 def render(svg: str, theme: str) -> str:

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0b0e1c"/><stop offset="1" stop-color="#191c45"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="2" cy="2" r="1.2" fill="#3a4170"/>
+  </pattern>
+  <radialGradient id="fade" cx="0.8" cy="0.3" r="0.8">
+    <stop offset="0" stop-color="#fff" stop-opacity="1"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+  </radialGradient>
+  <mask id="dotmask"><rect width="100%" height="100%" fill="url(#fade)"/></mask>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="8" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <marker id="ah-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f5b041"/></marker><marker id="ah-indigo" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c7ff2"/></marker><marker id="ah-teal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2fa7a0"/></marker><marker id="ah-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6d7597"/></marker>
+  
+</defs>
+<style>.s1 { animation: show1 16s ease-out infinite; }@keyframes show1 { 0%, 9% { opacity: 0; transform: translateY(6px); } 12%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }.s2 { animation: show2 16s ease-out infinite; }@keyframes show2 { 0%, 18% { opacity: 0; transform: translateY(6px); } 21%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }.s3 { animation: show3 16s ease-out infinite; }@keyframes show3 { 0%, 27% { opacity: 0; transform: translateY(6px); } 30%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }.s4 { animation: show4 16s ease-out infinite; }@keyframes show4 { 0%, 36% { opacity: 0; transform: translateY(6px); } 39%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }.s5 { animation: show5 16s ease-out infinite; }@keyframes show5 { 0%, 45% { opacity: 0; transform: translateY(6px); } 48%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }.s6 { animation: show6 16s ease-out infinite; }@keyframes show6 { 0%, 54% { opacity: 0; transform: translateY(6px); } 57%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+</style>
+<rect width="1200" height="520" rx="22" fill="url(#bg)"/>
+<rect width="1200" height="520" rx="22" fill="url(#dots)" mask="url(#dotmask)" opacity="0.9"/>
+<rect x="24" y="24" width="1152" height="472" rx="16" fill="#151a2e" stroke="#2c335a" stroke-width="1.5" />
+<circle cx="52" cy="52" r="6.5" fill="#ff5f57"/>
+<circle cx="74" cy="52" r="6.5" fill="#febc2e"/>
+<circle cx="96" cy="52" r="6.5" fill="#28c840"/>
+<text x="600.0" y="57" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#6d7597" text-anchor="middle" >claude — ~/agents/backend</text>
+<line x1="24" y1="78" x2="1176" y2="78" stroke="#2c335a"/>
+<g ><text x="56" y="118" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="700" fill="#eef0fa" text-anchor="start" >› why does the worker keep restarting?</text></g>
+<g class="s1"><text x="56" y="146" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="600" fill="#7c7ff2" text-anchor="start" >● cogvault_recall(query=&quot;worker restart loop&quot;, type=&quot;feedback&quot;)</text></g>
+<g class="s2"><text x="82" y="174" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="600" fill="#f5b041" text-anchor="start" >⎿ [0.0331] feedback_worker_crashloop.md</text></g>
+<g class="s2"><text x="108" y="202" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" fill="#a6aecb" text-anchor="start" >launchd KeepAlive restarts the worker when it crashes on a missing .env.</text></g>
+<g class="s2"><text x="108" y="230" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" fill="#a6aecb" text-anchor="start" >Fix: set EnvironmentVariables in the plist. Why: 3 hours lost, Sep 12.</text></g>
+<g class="s2"><text x="108" y="258" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" fill="#6d7597" text-anchor="start" >Related: reference_launchd_jobs</text></g>
+<g class="s3"><text x="56" y="286" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" fill="#eef0fa" text-anchor="start" >● It&#x27;s the launchd KeepAlive loop from September — the worker dies on a</text></g>
+<g class="s3"><text x="82" y="314" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" fill="#eef0fa" text-anchor="start" >missing .env and launchd brings it back. Put the env into the plist.</text></g>
+<g class="s4"><text x="56" y="370" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="700" fill="#eef0fa" text-anchor="start" >› remember: deploys always go through the staging flag first</text></g>
+<g class="s5"><text x="56" y="398" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="600" fill="#7c7ff2" text-anchor="start" >● cogvault_record(title=&quot;deploy via staging flag&quot;, type=&quot;feedback&quot;)</text></g>
+<g class="s6"><text x="82" y="426" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="600" fill="#2fa7a0" text-anchor="start" >⎿ &#123;&quot;status&quot;: &quot;ok&quot;, &quot;file&quot;: &quot;deploy_via_staging_flag.md&quot;&#125;</text></g>
+<g class="s6"><text x="108" y="454" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" fill="#6d7597" text-anchor="start" >a plain Markdown card — open it, edit it, git diff it</text></g>
+<text x="1144" y="474" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#6d7597" text-anchor="end" >illustrative session · formats match the real tool output</text>
+</svg>

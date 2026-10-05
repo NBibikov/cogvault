@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cogvault": {
+      "command": "uvx",
+      "args": ["cogvault", "mcp", "--tenant", "${COGVAULT_TENANT:-~/.cogvault/memory}"]
+    }
+  }
+}
