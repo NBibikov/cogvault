@@ -32,7 +32,7 @@ when to record:
 `/plugin install cogvault@cogvault`.</sub>
 
 Memory lives in `~/.cogvault/memory` (set `COGVAULT_TENANT` to change it). The plugin
-adds `/cogvault:remember` and `/cogvault:doctor`.
+adds `/cogvault:remember`.
 
 **Any MCP client, one line** (needs [uv](https://docs.astral.sh/uv/)):
 
