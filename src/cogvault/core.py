@@ -43,7 +43,7 @@ TENANT_CONFIG_NAME = ".cogvault.toml"
 _TENANT_CONFIG_KEYS = {
     "model": str, "dim": int, "chunk_chars": int, "rrf_k": int,
     "vec_pool": int, "fts_pool": int, "half_life_days": float, "mmr_lambda": float,
-    "snippet_chars": int, "evergreen_re": str, "recursive": bool,
+    "snippet_chars": int, "query_prefix": str, "doc_prefix": str, "evergreen_re": str, "recursive": bool,
     "strip_frontmatter": bool, "ignore_globs": tuple,
 }
 
@@ -172,6 +172,11 @@ class Config:
     half_life_days: float = 0.0      # 0 = decay OFF; e.g. 30 for fast-moving
     mmr_lambda: float = 0.7          # 1=pure relevance, 0=pure diversity
     snippet_chars: int = 0           # 0 = return full chunk (agents have big context)
+    # Asymmetric models (the e5 family) are trained with "query: "/"passage: "
+    # prefixes and lose several points of recall without them. None = use the
+    # model's known prefixes (see _MODEL_PREFIXES), "" = force none.
+    query_prefix: str | None = None
+    doc_prefix: str | None = None
     db_dir: str = ""                 # "" = ~/.cache/cogvault; set to a dir to override
     # feedback_* is evergreen by nature: standing rules ("never build unasked",
     # "no Android commits") don't expire because nobody touched the file in 90
@@ -230,6 +235,126 @@ def model_cache_dir() -> str:
             or os.path.join(os.path.expanduser("~/.cache"), "fastembed"))
 
 
+# Models fastembed does not ship but that are worth having. multilingual-e5-small
+# is the same 384 dims as MiniLM (no schema change) but reads 512 tokens instead
+# of 128 and, on a description→card eval over three live tenants (2026-10-05),
+# lifted hit@1 from 0.75/0.66/0.76 to 0.79/0.75/0.85. Registered lazily, only
+# when a tenant actually asks for it.
+_CUSTOM_MODELS = {
+    "intfloat/multilingual-e5-small": dict(
+        hf="Xenova/multilingual-e5-small", dim=384, model_file="onnx/model.onnx"),
+}
+_MODEL_PREFIXES = {
+    "intfloat/multilingual-e5-small": ("query: ", "passage: "),
+    "intfloat/multilingual-e5-large": ("query: ", "passage: "),
+}
+
+
+def model_prefixes(cfg: "Config") -> tuple[str, str]:
+    """(query_prefix, doc_prefix) for this config: explicit fields win, else the
+    model's known prefixes, else none."""
+    known = _MODEL_PREFIXES.get(cfg.model, ("", ""))
+    q = known[0] if cfg.query_prefix is None else cfg.query_prefix
+    d = known[1] if cfg.doc_prefix is None else cfg.doc_prefix
+    return q, d
+
+
+def _register_custom(model: str) -> None:
+    spec = _CUSTOM_MODELS.get(model)
+    if not spec:
+        return
+    from fastembed import TextEmbedding
+    if any(m["model"] == model for m in TextEmbedding.list_supported_models()):
+        return
+    from fastembed.common.model_description import PoolingType, ModelSource
+    try:
+        TextEmbedding.add_custom_model(
+            model=model, pooling=PoolingType.MEAN, normalization=True,
+            sources=ModelSource(hf=spec["hf"]), dim=spec["dim"],
+            model_file=spec["model_file"])
+    except ValueError:
+        pass                                   # already registered (race / re-import)
+
+
+_TOKENIZERS: dict = {}
+
+
+def max_tokens(model: str) -> int:
+    """The model's input window. Text past it is silently truncated — the vector
+    channel never sees it."""
+    trunc = getattr(_embedder(model).model.tokenizer, "truncation", None) or {}
+    return int(trunc.get("max_length") or 512)
+
+
+def count_tokens(text: str, model: str) -> int:
+    """Token count WITHOUT truncation. Uses a private copy of the model's
+    tokenizer: disabling truncation on the shared one would change what the
+    embedder itself sees."""
+    tok = _TOKENIZERS.get(model)
+    if tok is None:
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_str(_embedder(model).model.tokenizer.to_str())
+        tok.no_truncation()
+        tok.no_padding()
+        _TOKENIZERS[model] = tok
+    return len(tok.encode(text).ids)
+
+
+def fit_to_tokens(chunks: list[str], model: str, budget: int) -> list[str]:
+    """Split every chunk that exceeds `budget` tokens into pieces that fit.
+
+    paraphrase-multilingual-MiniLM truncates at 128 tokens while chunks were
+    packed to 1500 characters (~400-500 tokens of Ukrainian). An audit on
+    2026-10-05 found 91-94% of chunks over the limit on every multilingual
+    tenant: only ~35% of stored text was visible to the vector channel, the
+    rest reachable by exact-keyword BM25 alone. Splits on lines, then
+    sentences, then words, so pieces stay readable."""
+    out: list[str] = []
+    for ch in chunks:
+        if count_tokens(ch, model) <= budget:
+            out.append(ch)
+            continue
+        out.extend(_split_to_budget(ch, model, budget))
+    return out
+
+
+def _split_to_budget(text: str, model: str, budget: int) -> list[str]:
+    if count_tokens(text, model) <= budget:
+        return [text.strip()] if text.strip() else []
+    for sep_re in (r"\n", r"(?<=[.!?…])\s+", r"\s+"):
+        atoms = [a for a in re.split(sep_re, text) if a.strip()]
+        if len(atoms) > 1:
+            break
+    else:
+        # one unbreakable token run: hard-split by characters
+        half = max(1, len(text) // 2)
+        return (_split_to_budget(text[:half], model, budget)
+                + _split_to_budget(text[half:], model, budget))
+    joiner = "\n" if sep_re == r"\n" else " "
+    pieces, cur = [], ""
+    for a in atoms:
+        cand = (cur + joiner + a) if cur else a
+        if count_tokens(cand, model) <= budget:
+            cur = cand
+            continue
+        if cur:
+            pieces.append(cur.strip())
+        if count_tokens(a, model) <= budget:
+            cur = a
+        else:
+            pieces.extend(_split_to_budget(a, model, budget))
+            cur = ""
+    if cur.strip():
+        pieces.append(cur.strip())
+    return pieces
+
+
+def chunker_id(model: str) -> str:
+    """Stamped into meta: a chunker change re-chunks (and so re-embeds) the
+    tenant, just like a model change does."""
+    return f"tok-v1/{max_tokens(model)}"
+
+
 def _embedder(model: str):
     emb = _EMBEDDERS.get(model)
     if emb is None:
@@ -251,6 +376,7 @@ def _embedder(model: str):
                     warnings.filterwarnings(
                         "ignore", message=".*mean pooling.*", category=UserWarning)
                     from fastembed import TextEmbedding
+                    _register_custom(model)
                     cache = model_cache_dir()
                     os.makedirs(cache, exist_ok=True)
                     emb = TextEmbedding(model_name=model, cache_dir=cache)
@@ -368,8 +494,12 @@ def chunk_markdown(text: str, chunk_chars: int) -> list[str]:
         while len(p) > chunk_chars:
             if cur:
                 chunks.append(cur); cur = ""
-            chunks.append(p[:chunk_chars].strip())
-            p = p[chunk_chars:].strip()
+            # cut at the last whitespace, not mid-word ("Р ечення" broke both
+            # the token and the keyword channel for the split word)
+            cut = p.rfind(" ", chunk_chars // 2, chunk_chars)
+            cut = cut if cut > 0 else chunk_chars
+            chunks.append(p[:cut].strip())
+            p = p[cut:].strip()
         if not p:
             continue
         if len(cur) + len(p) < chunk_chars:
@@ -500,7 +630,8 @@ class Vault:
         prev = {k: v for k, v in con.execute("SELECT key,value FROM meta")}
         if not prev:
             want = {"model": self.cfg.model, "dim": str(self.cfg.dim),
-                    "backend": embed_backend(), "schema": str(SCHEMA_VERSION)}
+                    "backend": embed_backend(), "chunker": chunker_id(self.cfg.model),
+                    "schema": str(SCHEMA_VERSION)}
             con.executemany("INSERT INTO meta(key,value) VALUES(?,?)", want.items())
         con.commit()
         return con
@@ -565,6 +696,13 @@ class Vault:
                 or prev.get("dim") != str(self.cfg.dim)
                 or (prev_backend is not None and prev_backend != embed_backend()))
 
+    def _chunker_stale(self, con) -> bool:
+        """True when the index was chunked by an older chunker. A missing key
+        (pre-0.10 index) IS stale: those chunks were packed past the model's
+        token window, which is exactly what the rebuild fixes."""
+        row = con.execute("SELECT value FROM meta WHERE key='chunker'").fetchone()
+        return (row[0] if row else None) != chunker_id(self.cfg.model)
+
     def _iter_files(self):
         """Yield (key, fullpath) for every .md to index. key is the file's path
         RELATIVE to the tenant dir when recursive (so notes with the same basename
@@ -613,16 +751,33 @@ class Vault:
         links = parse_wikilinks(text)
         if self.cfg.strip_frontmatter:
             text = strip_frontmatter(text)
-        out = []
-        for ch in chunk_markdown(text, self.cfg.chunk_chars):
+        chunks = fit_to_tokens(chunk_markdown(text, self.cfg.chunk_chars),
+                               self.cfg.model, self._token_budget())
+        out: list = []
+        missing: list[int] = []
+        for ch in chunks:
             h = _sha(ch)
             cached = con.execute(
                 "SELECT vec FROM emb_cache WHERE hash=? AND model=?", (h, self.cfg.model)).fetchone()
             if cached:
                 out.append((ch, h, cached[0], True))
             else:
-                out.append((ch, h, _pack(embed([ch], self.cfg.model)[0]), False))
+                missing.append(len(out))
+                out.append((ch, h, None, False))
+        if missing:
+            # One batched call per file instead of one ONNX run per chunk.
+            _, dp = model_prefixes(self.cfg)
+            vecs = embed([dp + out[i][0] for i in missing], self.cfg.model)
+            for i, v in zip(missing, vecs):
+                ch, h, _, _ = out[i]
+                out[i] = (ch, h, _pack(v), False)
         return ftype, fname, links, out
+
+    def _token_budget(self) -> int:
+        """Tokens a chunk may use: the model window minus the doc prefix and
+        special tokens, so nothing gets truncated at embed time."""
+        _, dp = model_prefixes(self.cfg)
+        return max(32, max_tokens(self.cfg.model) - count_tokens(dp, self.cfg.model) - 2)
 
     def _index_file(self, con, key: str, fp: str, ev_re,
                     prepared: list | None = None) -> tuple[int, int, int, str | None]:
@@ -672,6 +827,11 @@ class Vault:
                       f"If unintended, check .cogvault.toml / $COGVAULT_MODEL.",
                       file=sys.stderr)
                 full = True
+            elif self._chunker_stale(con):
+                print(f"cogvault: chunker changed on {self.dir} — re-chunking "
+                      f"(chunks are now fitted to the model's token window).",
+                      file=sys.stderr)
+                full = True
             disk = {key: (fp, os.path.getmtime(fp)) for key, fp in self._iter_files()}
             known = {r[0]: r[1] for r in con.execute("SELECT path, mtime FROM files")}
             prepared = {key: self._prepare_file(con, fp)
@@ -685,8 +845,8 @@ class Vault:
             # mid-rebuild, SQLite rolls back to the previous model's index — no
             # half-wiped tables, no malformed vec0.
             con.execute("BEGIN IMMEDIATE")
-            if self._model_mismatch(con):   # re-check under the lock (lost race)
-                full = True
+            if self._model_mismatch(con) or self._chunker_stale(con):
+                full = True                 # re-check under the lock (lost race)
             if full:
                 # Truly-full wipe of ALL derived rows — not just paths listed in
                 # `files` — so orphans from older versions can't survive the
@@ -703,6 +863,7 @@ class Vault:
                     con.execute(f"DELETE FROM {tbl}")
                 for kv in {"model": self.cfg.model, "dim": str(self.cfg.dim),
                            "backend": embed_backend(),
+                           "chunker": chunker_id(self.cfg.model),
                            "schema": str(SCHEMA_VERSION)}.items():
                     con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", kv)
                 known = {}
@@ -726,7 +887,10 @@ class Vault:
                 con.execute("INSERT OR REPLACE INTO files(path,mtime,name) VALUES(?,?,?)",
                             (key, mt, fname))
                 n_chunks += c; n_new += nw; n_cache += cc; n_files += 1
-                if not full:
+                # mtime -1 = a schema migration invalidated it (content did not
+                # change). The v3 backfill on 2026-09-17 logged 1572 such
+                # "updates" — 88% of all card edits the log has ever recorded.
+                if not full and known.get(key) != -1:
                     touched.append((key, "create" if is_new else "update", c))
             for key in list(known):                   # files gone from disk
                 if key not in disk:
@@ -756,6 +920,10 @@ class Vault:
     # ---- search ----
     def search(self, query: str, k: int = 5, card_type: str | None = None) -> list[dict]:
         card_type = (card_type or "").strip().lower() or None
+        # Cold = this process has not loaded the model yet. Most recalls come
+        # from one-shot CLI processes, so the logged p50 (~530 ms) was model
+        # load, not search (~15 ms warm). Flag it so `analyze` can split them.
+        cold = self.cfg.model not in _EMBEDDERS
         _t0 = time.perf_counter()
         try:
             out = self._search(query, k, card_type)
@@ -769,7 +937,7 @@ class Vault:
             out = []
         from .obs import log_recall
         log_recall(self.dir, query, out, (time.perf_counter() - _t0) * 1000,
-                   card_type=card_type)
+                   card_type=card_type, cold=cold)
         return out
 
     def _heal_async(self) -> None:
@@ -821,7 +989,8 @@ class Vault:
                       f"to rebuild (or fix .cogvault.toml/$COGVAULT_MODEL).",
                       file=sys.stderr)
             over = self._FILTER_OVERFETCH if card_type else 1
-            qv = _pack(embed([query], self.cfg.model)[0])
+            qp, _ = model_prefixes(self.cfg)
+            qv = _pack(embed([qp + query], self.cfg.model)[0])
             # `distance` comes back alongside the id: RRF scores are pure rank
             # reciprocals (capped at ~2/rrf_k) and say nothing about whether a
             # hit is actually relevant, so we keep the raw vector distance to
@@ -865,12 +1034,22 @@ class Vault:
             if not fused:
                 return []
             # temporal decay (evergreen exempt)
+            # Age is computed NOW from the file's indexed mtime. chunks.age_days
+            # is the age at INDEX time and freezes there: a card untouched since
+            # the last rebuild looked exactly as young as it was that day (18
+            # days stale fleet-wide on 2026-10-05), so freshly re-indexed cards
+            # and old ones decayed on different clocks.
             if self.cfg.half_life_days > 0:
                 lam = math.log(2) / self.cfg.half_life_days
+                now = time.time()
                 for cid in list(fused):
-                    row = con.execute("SELECT age_days,evergreen FROM chunks WHERE id=?", (cid,)).fetchone()
+                    row = con.execute(
+                        "SELECT c.age_days, c.evergreen, f.mtime FROM chunks c "
+                        "LEFT JOIN files f ON f.path = c.path WHERE c.id=?", (cid,)).fetchone()
                     if row and not row[1]:
-                        fused[cid] *= math.exp(-lam * row[0])
+                        age = (max(0.0, (now - row[2]) / 86400.0)
+                               if row[2] is not None and row[2] > 0 else row[0])
+                        fused[cid] *= math.exp(-lam * age)
             ranked = sorted(fused, key=lambda c: -fused[c])
             # MMR diversity over the fused candidates
             selected = self._mmr(con, ranked, k)

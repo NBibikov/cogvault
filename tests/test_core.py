@@ -1019,3 +1019,120 @@ def test_write_card_then_recall_roundtrip(tmpvault):
     assert hits, "card written via MCP is not recallable"
     con = v._connect()
     assert v._related(con, "other.md") == ["project_course_worker_throughput.md"]
+
+
+# ---- 0.10.0: token window, e5 prefixes, live decay, write-path hardening ----
+
+def test_chunks_fit_the_model_token_window(tmpvault):
+    """paraphrase-multilingual-MiniLM truncates at 128 tokens; 1500-char chunks
+    left ~65% of every multilingual tenant's text invisible to the vector
+    channel. Every stored chunk must now fit the window."""
+    para = " ".join(f"Речення номер {i} про релізний процес і тестування." for i in range(60))
+    _write(tmpvault, "long.md", para)
+    v = Vault(tmpvault)
+    v.reindex()
+    con = v._connect()
+    texts = [r[0] for r in con.execute("SELECT text FROM chunks")]
+    con.close()
+    budget = v._token_budget()
+    assert len(texts) > 1
+    assert all(core.count_tokens(t, v.cfg.model) <= budget for t in texts)
+    # nothing dropped: every sentence survives somewhere
+    joined = " ".join(texts)
+    assert "Речення номер 59" in joined and "Речення номер 0 " in joined
+
+
+def test_tail_of_long_card_is_vector_reachable(tmpvault):
+    """A fact at the END of a long card must be findable by meaning alone."""
+    filler = "\n".join(f"Line {i}: routine notes about unrelated build chores." for i in range(40))
+    _write(tmpvault, "long.md", filler + "\nThe heat pump compressor trips when the outdoor sensor freezes.")
+    _write(tmpvault, "other.md", "Grocery list: apples, bread, cheese.")
+    v = Vault(tmpvault)
+    v.reindex()
+    res = v.search("compressor shuts down in frost", k=1)
+    assert res and res[0]["file"] == "long.md"
+    assert "compressor" in res[0]["text"]
+
+
+def test_legacy_index_without_chunker_is_rechunked(tmpvault):
+    _write(tmpvault, "a.md", "The gateway routes clients through one local entry point.")
+    v = Vault(tmpvault)
+    v.reindex()
+    con = v._connect()
+    con.execute("DELETE FROM meta WHERE key='chunker'")
+    con.commit()
+    assert v._chunker_stale(con)
+    con.close()
+    assert v.reindex()["files_reindexed"] == 1
+    con = v._connect()
+    assert not v._chunker_stale(con)
+    con.close()
+
+
+def test_e5_prefixes_resolved_from_model():
+    cfg = Config(model="intfloat/multilingual-e5-small")
+    assert core.model_prefixes(cfg) == ("query: ", "passage: ")
+    assert core.model_prefixes(Config()) == ("", "")
+    cfg.query_prefix = ""
+    assert core.model_prefixes(cfg)[0] == ""
+
+
+def test_decay_uses_live_file_age(tmpvault):
+    """Decay must follow the file's real age, not the age frozen at index time."""
+    _write(tmpvault, "project_old.md", "Deploy pipeline uses blue green switching.")
+    _write(tmpvault, "project_new.md", "Deploy pipeline uses blue green switching!")
+    v = Vault(tmpvault, Config(half_life_days=10, mmr_lambda=1.0))
+    v.reindex()
+    old = time.time() - 200 * 86400
+    os.utime(os.path.join(tmpvault, "project_old.md"), (old, old))
+    con = v._connect()     # simulate a stale index: mtime moved, age_days frozen at 0
+    con.execute("UPDATE files SET mtime=? WHERE path='project_old.md'", (old,))
+    con.execute("UPDATE chunks SET age_days=0")
+    con.commit(); con.close()
+    res = v.search("deploy pipeline blue green", k=2)
+    assert res[0]["file"] == "project_new.md"
+    assert res[1]["score"] < res[0]["score"] / 100
+
+
+def test_migration_backfill_is_not_logged_as_edits(tmpvault, monkeypatch):
+    import json
+    logf = os.path.join(tmpvault, "..", f"log-{os.path.basename(tmpvault)}.jsonl")
+    monkeypatch.setenv("COGVAULT_LOG", logf)
+    _write(tmpvault, "a.md", "alpha fact")
+    v = Vault(tmpvault)
+    v.reindex()
+    con = v._connect()
+    con.execute("UPDATE files SET mtime=-1")
+    con.commit(); con.close()
+    v.reindex()
+    ops = [json.loads(l).get("op") for l in open(logf) if '"record"' in l]
+    assert ops == ["create"]
+    os.remove(logf)
+
+
+def test_write_card_unclosed_frontmatter_does_not_crash(tmpvault):
+    from cogvault.mcp_server import _write_card
+    fp = _write_card(tmpvault, "---\nthis is not really frontmatter", "Dashes first", "project")
+    assert os.path.dirname(fp) == os.path.realpath(tmpvault) or os.path.dirname(fp) == tmpvault
+    assert "not really frontmatter" in open(fp).read()
+
+
+def test_write_card_name_cannot_escape_tenant(tmpvault):
+    from cogvault.mcp_server import _write_card
+    pre = "---\nname: ../../escape\nmetadata:\n  type: project\n---\n\nbody"
+    fp = _write_card(tmpvault, pre)
+    assert os.path.dirname(os.path.abspath(fp)) == os.path.abspath(tmpvault)
+
+
+def test_mcp_recall_validates_args(tmpvault):
+    from cogvault.mcp_server import MCPServer
+    srv = MCPServer(tmpvault, Config())
+    r = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "cogvault_recall", "arguments": {}}})
+    assert r["error"]["code"] == -32602
+    _write(tmpvault, "a.md", "alpha fact about gateways")
+    srv.vault.reindex()
+    r = srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": "cogvault_recall",
+                               "arguments": {"query": "gateway", "limit": "3"}}})
+    assert "result" in r

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.10.0 — 2026-10-05 — the vector channel could only see a third of memory
+
+- **Chunks are fitted to the model's token window.** `paraphrase-multilingual-MiniLM`
+  truncates input at **128 tokens**; chunks were packed to 1500 characters
+  (~400-500 tokens of Ukrainian). On every multilingual tenant 91-94% of chunks
+  were over the limit and only ~35% of stored text was visible to the vector
+  channel — the rest was reachable by exact-keyword BM25 alone. Chunks are now
+  split (lines → sentences → words) until each fits the window minus the doc
+  prefix. Indexes stamp `chunker` in `meta`; a missing or different stamp
+  triggers one automatic full rebuild.
+- **Embeddings are batched per file** instead of one ONNX run per chunk.
+- **`intfloat/multilingual-e5-small` supported** (registered as a fastembed
+  custom model; 384-d, 512-token window), with automatic `query: `/`passage: `
+  prefixes for the e5 family (`query_prefix`/`doc_prefix` override them).
+  End-to-end hybrid eval over three live tenants, description and card-tail
+  queries, hit@1 averaged: old 0.655 → MiniLM+fit 0.796 → **e5-small, 700-char
+  chunks 0.855** (hit@5 ~0.86 → ~0.975).
+- **Temporal decay uses the file's live age.** `chunks.age_days` froze at index
+  time, so cards untouched since the last rebuild decayed on a different clock
+  from freshly indexed ones (18 days of skew fleet-wide).
+- **Migration backfills are no longer logged as card edits.** The v3 backfill
+  logged 1572 phantom `update` events — 88% of all edits the log had recorded.
+- **Recalls carry a `cold` flag**; `analyze` splits model-load latency (~530 ms
+  p50) from warm search latency (~15 ms).
+- **MCP server warms the index in a background thread**, so a full rebuild on
+  boot no longer blocks `initialize` past the client's timeout.
+- **Write-path hardening:** an unclosed leading `---` no longer crashes
+  `cogvault_record`; frontmatter `name:` is slugified before becoming a filename
+  (`../` could escape the tenant); cards are created with `O_EXCL`, so concurrent
+  same-title records cannot overwrite each other; `cogvault_recall` validates
+  `query` and clamps `limit`.
+- **Long paragraphs are split at whitespace**, not mid-word.
+
 ## 0.9.0 — 2026-09-01 — embedding-backend drift, honest metrics
 
 The headline bug: **recall on every multilingual tenant had been silently

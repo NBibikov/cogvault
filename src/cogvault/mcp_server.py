@@ -5,7 +5,7 @@ Run:  cogvault mcp --tenant ~/agent/memory
 Tools: cogvault_recall (hybrid search), cogvault_record (append a markdown card).
 """
 from __future__ import annotations
-import sys, json, os, datetime
+import sys, json, os, datetime, threading
 from .core import Vault, Config
 from .obs import log_error
 from . import __version__
@@ -48,13 +48,19 @@ def _write_card(tenant_dir: str, content: str, title: str | None = None,
        through untouched (its own frontmatter completed if incomplete).
 
     Cards never overwrite: a name collision gets a numeric suffix."""
+    from .core import _FRONTMATTER_RE
     text = content.strip()
-    has_fm = text.startswith("---\n") or text.startswith("---\r\n")
+    # Only a CLOSED block counts. An opening `---` with no closing one used to
+    # take this branch and crash on m.group(0) of a failed match; it is plain
+    # content and gets wrapped like any other.
+    has_fm = bool(_FRONTMATTER_RE.match(text + "\n"))
+    if has_fm:
+        text += "\n"
 
     if has_fm:
         # Caller handed us a formatted card. Respect it: read its own name/type
         # rather than wrapping a second block around it.
-        from .core import parse_frontmatter_name, parse_frontmatter_type, _FRONTMATTER_RE
+        from .core import parse_frontmatter_name, parse_frontmatter_type
         name = parse_frontmatter_name(text) or _slugify(title or "") or None
         ftype = parse_frontmatter_type(text) or (card_type or "").strip().lower() or None
         m = _FRONTMATTER_RE.match(text)
@@ -88,21 +94,26 @@ def _write_card(tenant_dir: str, content: str, title: str | None = None,
         name = slug or name
 
     # Filename: <type>_<slug>.md, matching every hand-written card in the fleet.
-    stem = (name or "").replace("-", "_").strip("_")
+    # Always slugified: a frontmatter `name:` is caller data, and taken verbatim
+    # a name like "../../x" wrote outside the tenant.
+    stem = _slugify(name or "", limit=80).replace("-", "_").strip("_")
     if stem and ftype and not stem.startswith(ftype + "_"):
         stem = f"{ftype}_{stem}"
     if not stem:
         # No title and no frontmatter name — nothing meaningful to name it after.
         stem = "card_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    fp = os.path.join(tenant_dir, f"{stem}.md")
-    n = 2
-    while os.path.exists(fp):
-        fp = os.path.join(tenant_dir, f"{stem}_{n}.md")
-        n += 1
-    with open(fp, "w", encoding="utf-8") as f:
-        f.write(out_text)
-    return fp
+    # Exclusive create ("x"): exists()-then-open("w") let two concurrent
+    # records with the same title overwrite each other.
+    n = 1
+    while True:
+        fp = os.path.join(tenant_dir, f"{stem}.md" if n == 1 else f"{stem}_{n}.md")
+        try:
+            with open(fp, "x", encoding="utf-8") as f:
+                f.write(out_text)
+            return fp
+        except FileExistsError:
+            n += 1
 
 
 class MCPServer:
@@ -157,8 +168,15 @@ class MCPServer:
             name = p.get("name"); args = p.get("arguments", {})
             try:
                 if name == "cogvault_recall":
-                    res = self.vault.search(args["query"], k=args.get("limit", 5),
-                                            card_type=args.get("type"))
+                    query = args.get("query") if isinstance(args, dict) else None
+                    if not isinstance(query, str) or not query.strip():
+                        return self._err(rid, -32602,
+                            "cogvault_recall requires a non-empty string 'query'.")
+                    try:
+                        k = max(1, min(int(args.get("limit", 5)), 50))
+                    except (TypeError, ValueError):
+                        k = 5
+                    res = self.vault.search(query, k=k, card_type=args.get("type"))
                     if not res:
                         # Close the loop on memory gaps: a no-hit recall is the
                         # exact moment the agent knows a card is missing.
@@ -212,7 +230,17 @@ class MCPServer:
 
 def serve(tenant_dir: str, cfg: Config):
     srv = MCPServer(tenant_dir, cfg)
-    srv.vault.reindex()  # warm index on boot
+    # Warm the index in the background. Done inline, a model or chunker change
+    # turned boot into a full re-embed (minutes on a 600-card tenant) before
+    # the server answered `initialize`, and the client gave up on it. Recalls
+    # during the rebuild read the previous index (the rebuild is one atomic
+    # txn), so nothing is lost by not waiting.
+    def _warm():
+        try:
+            srv.vault.reindex()
+        except Exception as e:
+            log_error(tenant_dir, "boot-reindex", e)
+    threading.Thread(target=_warm, daemon=True).start()
     for line in sys.stdin:
         line = line.strip()
         if not line:

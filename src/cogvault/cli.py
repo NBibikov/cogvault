@@ -135,7 +135,7 @@ def _doctor(v, as_json: bool) -> int:
     _section("untyped", "cards with no type",
              "a `type` filter on recall will never match these")
     _section("legacy_names", "timestamp filenames",
-             "written by cogvault < 0.9.1; rename to <type>_<slug>.md")
+             "written by cogvault < 0.10.0; rename to <type>_<slug>.md")
     _section("nested_frontmatter", "frontmatter inside frontmatter",
              "a formatted card got wrapped again — the inner name/type is lost")
     _section("duplicate_names", "duplicate name: slugs",
@@ -211,7 +211,13 @@ def _analyze(a) -> int:
         return 0
     n = len(rows)
     empties = sum(1 for r in rows if r.get("empty"))
-    lat = [r["latency_ms"] for r in rows if r.get("latency_ms") is not None]
+    # Cold recalls include loading the model (one-shot CLI processes); mixing
+    # them in made a 15 ms search look like 530 ms. Rows logged before the
+    # flag existed have no `cold` key and count as warm.
+    lat = [r["latency_ms"] for r in rows
+           if r.get("latency_ms") is not None and not r.get("cold")]
+    lat_cold = [r["latency_ms"] for r in rows
+                if r.get("latency_ms") is not None and r.get("cold")]
     tops = [r["top_score"] for r in rows if r.get("top_score") is not None]
     # Vector distance is the only logged value that tracks relevance, but it is
     # comparable only WITHIN a tenant+backend (different models, and even the
@@ -259,6 +265,8 @@ def _analyze(a) -> int:
             "recalls": n, "empty_rate": round(empties / n, 3) if n else None,
             "latency_p50_ms": round(statistics.median(lat), 1) if lat else None,
             "latency_p95_ms": round(sorted(lat)[int(len(lat) * 0.95)], 1) if len(lat) > 2 else None,
+            "cold_latency_p50_ms": round(statistics.median(lat_cold), 1) if lat_cold else None,
+            "cold_recalls": len(lat_cold),
             # avg_top_score is retained for continuity but is NOT a quality
             # signal: RRF scores are rank reciprocals capped at 2/rrf_k.
             "avg_top_score": round(statistics.mean(tops), 5) if tops else None,
@@ -286,6 +294,9 @@ def _analyze(a) -> int:
     if lat:
         print(f"  latency p50/p95 {statistics.median(lat):.0f} / "
               f"{sorted(lat)[int(len(lat)*0.95)] if len(lat)>2 else lat[-1]:.0f} ms")
+    if lat_cold:
+        print(f"  cold-start p50  {statistics.median(lat_cold):.0f} ms  "
+              f"({len(lat_cold)} recalls paid a model load)")
     if dists_by_tenant:
         print("  top-hit distance (lower = better; per tenant, not comparable across)")
         for t, v in sorted(dists_by_tenant.items(), key=lambda x: -len(x[1])):

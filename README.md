@@ -71,6 +71,7 @@ is *broken* out of the box — but pick the model that matches your fleet's lang
 |--------------------------|-----|------|-----------|--------------------------|------|
 | `paraphrase-multilingual-MiniLM-L12-v2` **(default)** | 384 | 0.22 GB | hit@1 60% | ✅ works | Mixed-language fleets; safe default |
 | `BAAI/bge-small-en-v1.5` | 384 | 0.13 GB | **hit@1 87%** | ❌ Cyrillic vectors break | English-only memory |
+| `intfloat/multilingual-e5-small` | 384 | 0.47 GB | — | ✅ best per GB (512-token window) | Mixed-language fleets; use `chunk_chars = 700` |
 | `intfloat/multilingual-e5-large` | 1024 | 2.24 GB | high | ✅ best | Max quality, RAM to spare |
 
 <sub>*15-query ground-truth smoke test over a real mixed EN/UK memory dir. The default

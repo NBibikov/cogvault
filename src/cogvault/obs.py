@@ -48,7 +48,8 @@ def _append(rec: dict):
         pass
 
 def log_recall(tenant: str, query: str, results: list, latency_ms: float,
-               ts: float | None = None, card_type: str | None = None):
+               ts: float | None = None, card_type: str | None = None,
+               cold: bool | None = None):
     """Append one structured recall event."""
     top = results[0] if results else None
     _append({
@@ -70,6 +71,7 @@ def log_recall(tenant: str, query: str, results: list, latency_ms: float,
         "scores": [r["score"] for r in results[:5]],
         "dists": [r.get("dist") for r in results[:5]],
         "latency_ms": round(latency_ms, 1),
+        **({"cold": cold} if cold is not None else {}),
         "empty": not results,
     })
 
