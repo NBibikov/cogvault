@@ -150,7 +150,7 @@ def _doctor(v, as_json: bool) -> int:
     _section("untyped", "cards with no type",
              "a `type` filter on recall will never match these")
     _section("legacy_names", "timestamp filenames",
-             "written by a record call with no title; `cogvault repair` renames them")
+             "a record call with no title (or cogvault < 0.10.0); `cogvault repair` renames them")
     _section("nested_frontmatter", "frontmatter inside frontmatter",
              "a formatted card got wrapped again — the inner name/type is lost")
     _section("duplicate_names", "duplicate name: slugs",
