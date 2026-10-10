@@ -1,7 +1,7 @@
 {
   "name": "cogvault",
   "displayName": "cogvault memory",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "description": "Persistent memory for Claude Code over plain Markdown cards you own: hybrid recall (vector + BM25), offline, no LLM in the loop.",
   "author": {
     "name": "Nick Bibikov",

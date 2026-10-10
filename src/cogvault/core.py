@@ -1303,8 +1303,10 @@ class Vault:
             # Dated files (YYYY-MM-DD.md) are session logs, not cards: they are
             # narrative by design and carry no frontmatter. Flagging them would
             # make doctor cry wolf on a healthy tenant.
+            # MEMORY.md / INDEX.md are pointer indexes by convention, not cards
+            # (repair() skips them for the same reason).
             is_log = bool(re.match(r"\d{4}-\d{2}-\d{2}$", stem))
-            if not is_log:
+            if not is_log and stem not in ("MEMORY", "INDEX"):
                 if not _FRONTMATTER_RE.match(text):
                     report["no_frontmatter"].append(key)
                 elif parse_frontmatter_type(text) is None:

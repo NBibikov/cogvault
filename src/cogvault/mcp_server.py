@@ -28,6 +28,13 @@ def _slugify(s: str, limit: int = 60) -> str:
     return "".join(out).strip("-")[:limit]
 
 
+def _first_line(text: str) -> str:
+    """First non-empty line, markdown heading marks stripped — the fallback
+    source for a card name when the caller passed no title."""
+    return next((ln.strip().lstrip("#").strip() for ln in text.splitlines()
+                 if ln.strip()), "")
+
+
 def _write_card(tenant_dir: str, content: str, title: str | None = None,
                 card_type: str | None = None) -> str:
     """Append a memory as a real markdown file (source of truth).
@@ -39,8 +46,10 @@ def _write_card(tenant_dir: str, content: str, title: str | None = None,
        write time, collide with nothing, and tell a human nothing — and because
        the convention everywhere else is `<type>_<slug>.md`, they were invisible
        to anyone grepping the vault by topic. Now a card is named
-       `<type>_<slug>.md` from its title, falling back to a timestamp ONLY when
-       there is no usable title.
+       `<type>_<slug>.md` from its title, else from the first line of the
+       content (agents often omit `title`: 12 `card_<timestamp>.md` files, all
+       named "card", in two tenants within three days of 0.11.3). A timestamp
+       is used ONLY when the content has no usable text at all.
     2. `content` that already carried frontmatter got a SECOND frontmatter block
        wrapped around it, with the inner block's raw YAML quoted into the outer
        `description:`. parse_frontmatter_type then read the outer block, so the
@@ -61,7 +70,9 @@ def _write_card(tenant_dir: str, content: str, title: str | None = None,
         # Caller handed us a formatted card. Respect it: read its own name/type
         # rather than wrapping a second block around it.
         from .core import parse_frontmatter_name, parse_frontmatter_type
-        name = parse_frontmatter_name(text) or _slugify(title or "") or None
+        body_first = _first_line(text[_FRONTMATTER_RE.match(text).end():])
+        name = (parse_frontmatter_name(text) or _slugify(title or "")
+                or _slugify(body_first) or None)
         ftype = parse_frontmatter_type(text) or (card_type or "").strip().lower() or None
         m = _FRONTMATTER_RE.match(text)
         block = m.group(0).split("---", 2)[1].strip("\n")
@@ -74,6 +85,8 @@ def _write_card(tenant_dir: str, content: str, title: str | None = None,
         out_text = "---\n" + "\n".join(lines) + "\n---\n\n" + body + "\n"
     else:
         name = _slugify(title) if title else ""
+        if not name:
+            name = _slugify(_first_line(text))
         ftype = (card_type or "").strip().lower()
         if ftype and ftype not in _TYPES:
             ftype = ""
@@ -129,7 +142,8 @@ INSTRUCTIONS = (
     "where something lives (paths, dashboards, URLs, credentials' location), or what "
     "was decided before, call cogvault_recall first — it is cheap, and the "
     "answer may already be there. After a decision, a non-obvious fix or a correction "
-    "from the user, save it with cogvault_record (one fact per card, with a type).")
+    "from the user, save it with cogvault_record (one fact per card, with a type "
+    "and a short title).")
 
 
 class MCPServer:

@@ -1,6 +1,6 @@
 """cogvault CLI: index | search | mcp | stats | analyze | doctor | repair."""
 from __future__ import annotations
-import argparse, json, os, sys, statistics
+import argparse, json, os, re, sys, statistics
 from .core import Vault, Config
 from . import __version__
 
@@ -64,6 +64,8 @@ def main(argv=None):
 
     an = sub.add_parser("analyze", help="Effectiveness report from the query log")
     an.add_argument("--tenant", help="Filter to one tenant (default: all)")
+    an.add_argument("--since", help="Only events from the last N days (e.g. 7) "
+                                    "or from a date (YYYY-MM-DD). Default: whole log")
     an.add_argument("--json", action="store_true")
 
     a = p.parse_args(argv)
@@ -148,7 +150,7 @@ def _doctor(v, as_json: bool) -> int:
     _section("untyped", "cards with no type",
              "a `type` filter on recall will never match these")
     _section("legacy_names", "timestamp filenames",
-             "written by cogvault < 0.10.0; rename to <type>_<slug>.md")
+             "written by a record call with no title; `cogvault repair` renames them")
     _section("nested_frontmatter", "frontmatter inside frontmatter",
              "a formatted card got wrapped again — the inner name/type is lost")
     _section("duplicate_names", "duplicate name: slugs",
@@ -254,6 +256,21 @@ def _analyze(a) -> int:
         from .obs import tenant_label
         # match both the current parent/basename label and the legacy bare basename
         tfilter = {tenant_label(a.tenant), os.path.basename(a.tenant.rstrip("/"))}
+    # The log spans backend changes: distances from a retired model sit on a
+    # different scale and drag the per-tenant p50/p90 for months. --since
+    # limits the report to the current backend's window.
+    since = None
+    if a.since:
+        import datetime, time
+        if re.fullmatch(r"\d+", a.since):
+            since = time.time() - int(a.since) * 86400
+        else:
+            try:
+                since = datetime.datetime.strptime(a.since, "%Y-%m-%d").timestamp()
+            except ValueError:
+                print(f"--since: expected days (7) or YYYY-MM-DD, got {a.since!r}",
+                      file=sys.stderr)
+                return 2
     with open(path, encoding="utf-8") as f:
         for line in f:
             try:
@@ -261,6 +278,8 @@ def _analyze(a) -> int:
             except Exception:
                 continue
             if tfilter and d.get("tenant") not in tfilter:
+                continue
+            if since is not None and (d.get("ts") or 0) < since:
                 continue
             if d.get("event") == "recall":
                 rows.append(d)
@@ -344,7 +363,8 @@ def _analyze(a) -> int:
             "errors_by_type": err_by_type}, indent=2))
         return 0
 
-    print(f"cogvault — recall effectiveness  ({path})\n")
+    window = f", since {a.since}" if a.since else ""
+    print(f"cogvault — recall effectiveness  ({path}{window})\n")
     print(f"  recalls         {n}")
     if n:
         # A hybrid search returns the top-k of its candidate pool, so a truly

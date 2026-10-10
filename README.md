@@ -331,6 +331,7 @@ actually helping. `cogvault analyze` turns the log into a report:
 ```bash
 cogvault analyze            # recalls, latency, per-tenant hit distance, weakest hits, card writes
 cogvault analyze --json     # machine-readable
+cogvault analyze --since 7  # only the last 7 days (or --since 2026-10-05)
 ```
 
 The section that matters is **weakest hits**: each tenant's worst decile by vector

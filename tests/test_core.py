@@ -1041,13 +1041,60 @@ def test_write_card_never_overwrites(tmpvault):
     assert "First fact." in open(a).read() and "Second, different fact." in open(b).read()
 
 
-def test_write_card_falls_back_when_untitled(tmpvault):
-    """No title and no frontmatter: there is nothing meaningful to name it after,
-    so a timestamp is correct here — but it must still be a valid card."""
+def test_write_card_untitled_named_from_content(tmpvault):
+    """No title: name the card after its first line, not a timestamp. Agents
+    omit `title` in practice; after 0.11.3 that wrote 12 `card_<ts>.md` files
+    all named "card" (one shared slug, so a [[link]] reached only one)."""
     from cogvault.mcp_server import _write_card
-    fp = _write_card(tmpvault, "An orphan fact with no title at all.")
+    from cogvault.core import parse_frontmatter_name
+    fp = _write_card(tmpvault, "# Build 240 timed out\n\nThe lane hit the 10 min cap.",
+                     card_type="project")
+    assert os.path.basename(fp) == "project_build_240_timed_out.md"
+    assert parse_frontmatter_name(open(fp).read()) == "project-build-240-timed-out"
+    # formatted card with no name: still named from the body
+    fp2 = _write_card(tmpvault, "---\ndescription: d\n---\n\nKeychain holds the keys.")
+    assert os.path.basename(fp2) == "keychain_holds_the_keys.md"
+
+
+def test_write_card_timestamp_only_without_text(tmpvault):
+    """A timestamp is the last resort: content with no usable text at all."""
+    from cogvault.mcp_server import _write_card
+    fp = _write_card(tmpvault, "---- ... ----")
     assert os.path.basename(fp).startswith("card_")
-    assert "An orphan fact" in open(fp).read()
+    assert "---- ... ----" in open(fp).read()
+
+
+def test_doctor_skips_memory_and_index_pointers(tmpvault):
+    """MEMORY.md / INDEX.md are pointer indexes by convention and carry no
+    frontmatter; doctor flagged them on five healthy tenants."""
+    _write(tmpvault, "MEMORY.md", "- [A](project_a.md) — pointer")
+    _write(tmpvault, "INDEX.md", "- 2026-10-10 — one line")
+    _write(tmpvault, "project_a.md",
+           "---\nname: project-a\ndescription: d\nmetadata:\n  type: project\n---\nBody.")
+    v = Vault(tmpvault, Config())
+    v.reindex()
+    rep = v.diagnose()
+    assert rep["no_frontmatter"] == [], rep
+
+
+def test_analyze_since_drops_older_events(tmpvault, monkeypatch, capsys):
+    """--since limits the report to a window, so distances from a retired
+    backend stop dragging the per-tenant numbers."""
+    import json, time
+    from cogvault.cli import main
+    logf = os.path.join(tmpvault, "qlog.jsonl")
+    monkeypatch.setenv("COGVAULT_LOG", logf)
+    now = time.time()
+    with open(logf, "w") as f:
+        for ts, q in ((now - 40 * 86400, "old"), (now - 3600, "new")):
+            f.write(json.dumps({"ts": ts, "event": "recall", "tenant": "t/memory",
+                                "query": q, "n_results": 1, "latency_ms": 10.0,
+                                "top_dist": 0.5, "empty": False}) + "\n")
+    assert main(["analyze", "--since", "7", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["recalls"] == 1
+    assert main(["analyze", "--since", "2000-01-01", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["recalls"] == 2
+    assert main(["analyze", "--since", "last week"]) == 2
 
 
 def test_write_card_then_recall_roundtrip(tmpvault):

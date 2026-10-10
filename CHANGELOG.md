@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.4 — 2026-10-10 — untitled records get real names
+
+- **Fix: `cogvault_record` without `title` wrote `card_<timestamp>.md` named "card".**
+  Agents often omit `title`. In the three days after 0.11.3, two tenants got 12 such
+  cards. They all shared the slug `card`, so a `[[link]]` could reach only one of them.
+  The card name now comes from the first line of the content. A timestamp is used only
+  when the content has no usable text. The MCP instructions now also ask for a title.
+- `doctor` no longer reports `MEMORY.md` and `INDEX.md` as cards without frontmatter.
+  They are pointer indexes by convention (`repair` already skipped them).
+- `doctor` no longer says timestamp filenames come from cogvault < 0.10.0. The current
+  server wrote them too. The hint now points to `cogvault repair`.
+- `analyze --since N|YYYY-MM-DD` limits the report to a time window. The log spans
+  backend changes, and distances from a retired model kept the per-tenant p50/p90 high.
+
 ## 0.11.3 — 2026-10-06 — agents check memory first, and get the whole card
 
 - **Fix: a summary hit hid the card.** Since 0.11.0 a card's `name — description` is
