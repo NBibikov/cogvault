@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: links to title-style names did not resolve.** Older cards declare a title
+  (`name: Use fastlane for TestFlight`), while agents link the slug
+  (`[[use-fastlane-for-testflight]]`). Link resolution matched case and whitespace
+  exactly, so these cards never showed in recall's "Related" line, and `doctor`
+  reported them as ghost links (5 of the fleet's 121 on 2026-10-13). Resolution and
+  `doctor` now compare a slug that ignores case, whitespace and `-`/`_`. It is still
+  an exact identity, not a near-miss guess.
+
 ## 0.11.4 — 2026-10-10 — untitled records get real names
 
 - **Fix: `cogvault_record` without `title` wrote `card_<timestamp>.md` named "card".**

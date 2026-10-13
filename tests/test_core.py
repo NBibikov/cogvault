@@ -1321,6 +1321,26 @@ def test_links_resolve_without_type_prefix(tmpvault):
     assert v.diagnose()["ghost_links"] == []
 
 
+def test_links_resolve_to_title_case_names(tmpvault):
+    """Older cards declare a title, not a slug (name: Use fastlane for TestFlight),
+    while agents link the slug ([[use-fastlane-for-testflight]]). Case and
+    whitespace are spelling, not identity: 10 of the fleet's ghost links on
+    2026-10-13 were exactly this, and their cards never surfaced as related."""
+    _write(tmpvault, "feedback_fastlane.md",
+           "---\nname: Use fastlane for TestFlight\ntype: feedback\n---\nAlways fastlane beta.\n")
+    _write(tmpvault, "project_ios.md",
+           "---\nname: project-ios\nmetadata:\n  type: project\n---\n\n"
+           "iOS build notes. See [[use-fastlane-for-testflight]] and [[Obsidian LiveSync server]].\n")
+    _write(tmpvault, "reference_obsidian_livesync.md",
+           "---\nname: obsidian-livesync-server\nmetadata:\n  type: reference\n---\nCouchDB.\n")
+    v = Vault(tmpvault)
+    v.reindex()
+    con = v._connect()
+    assert sorted(v._related(con, "project_ios.md")) == [
+        "feedback_fastlane.md", "reference_obsidian_livesync.md"]
+    assert v.diagnose()["ghost_links"] == []
+
+
 def test_eval_command_scores_golden_set(tmpvault, capsys):
     import json
     from cogvault.cli import main

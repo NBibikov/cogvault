@@ -521,6 +521,14 @@ def link_variants(target: str) -> list[str]:
     return out
 
 
+def link_slug(s: str) -> str:
+    """Spelling-insensitive identity of a link target or a card name: case,
+    whitespace and -/_ are spelling, not meaning. Older cards declare a title
+    (name: Use fastlane for TestFlight) that agents link as a slug
+    ([[use-fastlane-for-testflight]])."""
+    return re.sub(r"[\s_-]+", "-", s.strip().lower()).strip("-")
+
+
 def parse_wikilinks(text: str) -> list[str]:
     """All [[wiki-link]] target slugs in a document, deduped, order preserved.
     Slugs are returned as written; resolution to real files happens at search
@@ -1246,8 +1254,9 @@ class Vault:
         filename-only matching found just 1 link in 3 on a real tenant — two
         thirds of the memory graph was invisible to recall."""
         out: list[str] = []
+        slugs: dict[str, str] | None = None   # built lazily, only on a miss
         for (target,) in con.execute(
-                "SELECT DISTINCT target FROM links WHERE src_path=?", (src_key,)):
+                "SELECT DISTINCT target FROM links WHERE src_path=?", (src_key,)).fetchall():
             row = None
             # Separator-insensitive, then type-prefix-insensitive (link_variants).
             for cand in link_variants(target):
@@ -1257,6 +1266,18 @@ class Vault:
                     (cand, f"{cand}.md", f"%{os.sep}{cand}.md", cand)).fetchone()
                 if row:
                     break
+            if row is None:
+                # Last resort: same slug up to case/whitespace (title-style
+                # names). Still exact identity — never a near-miss guess.
+                if slugs is None:
+                    slugs = {}
+                    for path, name in con.execute(
+                            "SELECT path, name FROM files ORDER BY path"):
+                        stem = os.path.basename(path)[:-3]
+                        for k in {link_slug(stem), link_slug(name or "")} - {""}:
+                            slugs.setdefault(k, path)
+                row = next(((slugs[k],) for k in map(link_slug, link_variants(target))
+                            if k in slugs), None)
             if row and row[0] not in out:
                 out.append(row[0])
                 if len(out) >= cap:
@@ -1287,7 +1308,8 @@ class Vault:
             for n in ns:
                 if n.endswith(".md"):
                     st = n[:-3]
-                    resolvable |= {st, st.replace("-", "_"), st.replace("_", "-")}
+                    resolvable |= {st, st.replace("-", "_"), st.replace("_", "-"),
+                                   link_slug(st)}
         for key, fp in sorted(files.items()):
             text = open(fp, encoding="utf-8", errors="ignore").read()
             base = os.path.basename(key)
@@ -1295,7 +1317,8 @@ class Vault:
             nm = parse_frontmatter_name(text)
             if nm:
                 names[nm].append(key)
-                resolvable |= {nm, nm.replace("-", "_"), nm.replace("_", "-")}
+                resolvable |= {nm, nm.replace("-", "_"), nm.replace("_", "-"),
+                               link_slug(nm)}
             # basename, not the relative key: a link to an archived log
             # ([[2026-06-11]] → archive/2026-06-11.md) still resolves.
             resolvable |= {stem, stem.replace("-", "_"), stem.replace("_", "-")}
@@ -1324,7 +1347,8 @@ class Vault:
             for tgt in parse_wikilinks(text):
                 if "/" in tgt or tgt.endswith(".md"):
                     continue          # a path to a file outside memory, not a card slug
-                if not (set(link_variants(tgt)) & resolvable):
+                variants = link_variants(tgt)
+                if not ((set(variants) | {link_slug(v) for v in variants}) & resolvable):
                     report["ghost_links"].append({"file": key, "target": tgt})
 
         report["duplicate_names"] = [{"name": n, "files": fs}
