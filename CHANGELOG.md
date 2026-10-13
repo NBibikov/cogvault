@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 — 2026-10-13 — shared daemon + cross-encoder reranker
+
+- **Reranker: hit@1 0.60 → 0.80 on 65 real queries.** New tenant option
+  `rerank = "BAAI/bge-reranker-v2-m3-int8"`: a cross-encoder reorders the hybrid top 10
+  (`rerank_top`) by the first 800 characters (`rerank_chars`) of each card file.
+  17 queries better, 3 worse; 95% bootstrap interval of the gain +0.09 to +0.34.
+  hit@5 0.88 → 0.91, MRR 0.70 → 0.85. The model needs ~2 GB, so it runs only where
+  `Vault.allow_rerank` is set: the daemon and `cogvault eval` (`--no-rerank` for A/B).
+  A rerank failure keeps the hybrid order. Changing these options never re-embeds.
+  The model is registered as a custom fastembed model, so fastembed 0.8.0 works and an
+  upgrade (which re-embeds every tenant) is not needed.
+- **`cogvault daemon`: one copy of the models for every tenant.** Each agent session
+  ran its own `cogvault mcp`, and each loaded the embedding model (~1.2 GB × 5–7
+  sessions). The daemon serves search and reindex over a Unix socket (mode 600).
+  `cogvault mcp` is now a thin shim (~40 MB) that writes card files and forwards;
+  `cogvault search` forwards too. When the daemon is down, both search in-process
+  without the reranker and log one `daemon-fallback` event. `cogvault daemon --status`
+  pings it. Listen backlog is 128: the socketserver default of 5 refused concurrent
+  agents in testing.
 
 - **Fix: links to title-style names did not resolve.** Older cards declare a title
   (`name: Use fastlane for TestFlight`), while agents link the slug

@@ -213,7 +213,11 @@ def make_server(path: str | None = None) -> _Server:
 
 
 def serve(path: str | None = None) -> None:
+    import signal
     srv = make_server(path)
+    # launchd stops the daemon with SIGTERM; exit through `finally` so the
+    # socket file goes away with the process.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     print(f"cogvault daemon {__version__} (pid {os.getpid()}) on {srv.server_address}",
           file=sys.stderr, flush=True)
     try:

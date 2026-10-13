@@ -170,6 +170,24 @@ What the numbers do and don't say:
   aggregate numbers are in [`assets/benchmark.json`](https://github.com/NBibikov/cogvault/blob/main/assets/benchmark.json); the queries
   are private and stay in each tenant.
 
+### Reranking
+
+A cross-encoder reads the query and each candidate card together, so it can tell which
+card answers the question, not only which one is about the same topic. With
+`rerank = "BAAI/bge-reranker-v2-m3-int8"`, cogvault scores the hybrid top 10 by the first
+800 characters of each card file and reorders them. On the same 65 queries
+(`cogvault 0.12.0`, e5-small + summary chunk):
+
+| | hit@1 | hit@5 | MRR@10 |
+|---|---|---|---|
+| hybrid only | 0.60 | 0.88 | 0.70 |
+| hybrid + reranker | **0.80** | **0.91** | **0.85** |
+
+The reranker made 17 queries better and 3 worse. The 95% bootstrap interval of the hit@1
+gain is +0.09 to +0.34. The cost is ~2 GB RAM and 1–2 s per recall on an Apple M-series
+CPU, so it runs only in the [shared daemon](#shared-daemon) and in `cogvault eval`
+(`--no-rerank` scores without it).
+
 Run the same check on your own memory: put judged queries in
 `<tenant>/.cogvault-golden.jsonl` (`{"query": "...", "relevant": ["file.md"]}`, empty
 `relevant` = a known gap) and run `cogvault eval --tenant DIR`.
@@ -351,6 +369,25 @@ memory unless you point B at A's directory.
   <img alt="Four agents, each pointed at its own memory directory with its own index; tenants are isolated" src="https://raw.githubusercontent.com/NBibikov/cogvault/main/assets/fleet-light.svg">
 </picture>
 
+### Shared daemon
+
+Each MCP client starts its own `cogvault mcp`. Without a daemon, each of these processes
+loads the embedding model (~1 GB), and none can afford the reranker. `cogvault daemon`
+loads each model once for all tenants and serves them over a Unix socket
+(`~/.cache/cogvault/daemon.sock`, mode 600). `cogvault mcp` and `cogvault search` find it
+automatically and forward to it; the MCP process then stays at ~40 MB. When the daemon is
+down, they search in-process as before, without the reranker, and log one
+`daemon-fallback` event to the query log.
+
+```bash
+cogvault daemon            # run in the foreground
+cogvault daemon --status   # ping it: version, loaded models, tenants served
+```
+
+On macOS, run it under launchd with `RunAtLoad` and `KeepAlive` (program arguments
+`cogvault daemon`). After you upgrade cogvault, restart the daemon:
+`launchctl kickstart -k gui/$(id -u)/<label>`.
+
 ## Design notes
 
 | Decision | Why |
@@ -362,6 +399,7 @@ memory unless you point B at A's directory.
 | RRF + decay + MMR | Precision, recency, and diversity without a graph DB |
 | One process, many tenants | Fleet infra, not a single-user desktop sidecar |
 | WAL + incremental reindex | Concurrent agents read while one writes; only changed files re-embed |
+| Optional shared daemon | One copy of each model for the fleet; clients fall back in-process when it is down |
 
 ## Roadmap
 
