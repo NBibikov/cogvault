@@ -1,4 +1,4 @@
-"""cogvault CLI: index | search | mcp | stats | analyze | doctor | repair."""
+"""cogvault CLI: index | search | mcp | daemon | stats | analyze | doctor | repair | eval."""
 from __future__ import annotations
 import argparse, json, os, re, sys, statistics
 from .core import Vault, Config
@@ -42,6 +42,14 @@ def main(argv=None):
     mc = sub.add_parser("mcp", help="Run stdio MCP server for this tenant")
     add_common(mc)
 
+    dm = sub.add_parser("daemon", help="Run the shared model daemon that `mcp` "
+                                       "and `search` forward to")
+    dm.add_argument("--socket", default=None,
+                    help="Unix socket path (default: $COGVAULT_SOCKET or "
+                         "~/.cache/cogvault/daemon.sock)")
+    dm.add_argument("--status", action="store_true",
+                    help="Ping the running daemon and print its state; exit 1 if down")
+
     st = sub.add_parser("stats", help="Index stats")
     st.add_argument("--tenant", required=True)
 
@@ -61,6 +69,8 @@ def main(argv=None):
                          "<tenant>/.cogvault-golden.jsonl)")
     ev.add_argument("-k", type=int, default=5)
     ev.add_argument("--json", action="store_true")
+    ev.add_argument("--no-rerank", action="store_true",
+                    help="Score the hybrid ranking only, even if the tenant sets `rerank`")
 
     an = sub.add_parser("analyze", help="Effectiveness report from the query log")
     an.add_argument("--tenant", help="Filter to one tenant (default: all)")
@@ -74,6 +84,18 @@ def main(argv=None):
 
     if a.cmd == "analyze":
         return _analyze(a)
+
+    if a.cmd == "daemon":
+        from .daemon import DaemonClient, DaemonUnavailable, serve
+        if a.status:
+            try:
+                print(json.dumps(DaemonClient(a.socket).ping(), indent=2))
+                return 0
+            except DaemonUnavailable as e:
+                print(f"cogvault daemon: not running ({e})", file=sys.stderr)
+                return 1
+        serve(a.socket)
+        return 0
 
     if a.cmd == "stats":
         v = Vault(a.tenant)
@@ -166,6 +188,7 @@ def _run(a, v, cfg) -> int:
     if a.cmd == "doctor":
         return _doctor(v, a.json)
     if a.cmd == "eval":
+        v.allow_rerank = not a.no_rerank
         return _eval(a, v)
     if a.cmd == "repair":
         plan = v.repair(apply=a.apply)
@@ -180,7 +203,13 @@ def _run(a, v, cfg) -> int:
     if a.cmd == "index":
         print(json.dumps(v.reindex()))
     elif a.cmd == "search":
-        res = v.search(a.query, k=a.k, card_type=a.type)
+        # Subagents recall through this path. The daemon has the models loaded
+        # (and the reranker); a one-shot process would pay the model load.
+        from .daemon import DaemonClient, DaemonUnavailable
+        try:
+            res = DaemonClient().search(v.dir, cfg, a.query, a.k, a.type)
+        except DaemonUnavailable:
+            res = v.search(a.query, k=a.k, card_type=a.type)
         if not res and v.join_heal(timeout=600):
             # a corrupt index triggered a background rebuild — in a short-lived
             # CLI process the daemon thread would die at exit, leaving the index

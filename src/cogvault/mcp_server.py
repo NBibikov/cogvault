@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys, json, os, datetime, threading
 from .core import Vault, Config
 from .obs import log_error
+from .daemon import DaemonClient, DaemonUnavailable
 from . import __version__
 
 PROTOCOL = "2024-11-05"
@@ -152,6 +153,11 @@ class MCPServer:
         # The vault's resolved dir, not the raw argument: an MCP client launches
         # without a shell, so "~/memory" arrives unexpanded and card writes failed.
         self.tenant_dir = self.vault.dir
+        # Thin-shim mode: the shared daemon holds the models; this process only
+        # writes card files and forwards. self.vault (no reranker) is the
+        # fallback for when the daemon is down, so recall never depends on it.
+        self.daemon = DaemonClient()
+        self._fallback_logged = False
         self.tools = {
             "cogvault_recall": {
                 "description": "Search the persistent memory of earlier sessions: past bugs and "
@@ -214,7 +220,7 @@ class MCPServer:
                         k = max(1, min(int(args.get("limit", 5)), 50))
                     except (TypeError, ValueError):
                         k = 5
-                    res = self.vault.search(query, k=k, card_type=args.get("type"))
+                    res = self._search(query, k, args.get("type"))
                     if not res:
                         # Close the loop on memory gaps: a no-hit recall is the
                         # exact moment the agent knows a card is missing.
@@ -247,7 +253,7 @@ class MCPServer:
                     # place that sees BOTH this tool and the far more common
                     # write-a-file-then-`cogvault index` path). Logging here too
                     # would double-count every MCP write.
-                    self.vault.reindex()
+                    self._reindex(wait=True)
                     return self._ok(rid, {"content": [{"type": "text",
                             "text": json.dumps({"status": "ok", "file": os.path.basename(fp)})}]})
                 return self._err(rid, -32601, f"unknown tool {name}")
@@ -258,6 +264,29 @@ class MCPServer:
         if rid is None:
             return None               # unknown id-less message = notification: stay silent
         return self._err(rid, -32601, f"unknown method {m}")
+
+    def _fallback(self, e: Exception) -> None:
+        # Once per process: a dead daemon must show in `analyze`, not flood it.
+        if not self._fallback_logged:
+            self._fallback_logged = True
+            log_error(self.tenant_dir, "daemon-fallback", e)
+
+    def _search(self, query: str, k: int, card_type: str | None) -> list[dict]:
+        try:
+            return self.daemon.search(self.tenant_dir, self.vault.cfg, query, k, card_type)
+        except DaemonUnavailable as e:
+            self._fallback(e)
+            return self.vault.search(query, k=k, card_type=card_type)
+
+    def _reindex(self, wait: bool) -> None:
+        try:
+            self.daemon.reindex(self.tenant_dir, self.vault.cfg, wait=wait)
+        except DaemonUnavailable as e:
+            self._fallback(e)
+            if wait:
+                self.vault.reindex()
+            else:
+                raise
 
     @staticmethod
     def _ok(rid, result): return {"jsonrpc": "2.0", "id": rid, "result": result}
@@ -273,12 +302,16 @@ def serve(tenant_dir: str, cfg: Config):
     # the server answered `initialize`, and the client gave up on it. Recalls
     # during the rebuild read the previous index (the rebuild is one atomic
     # txn), so nothing is lost by not waiting.
+    # With the daemon up, it reindexes (and loads the models) on its side.
     def _warm():
         try:
             srv.vault.reindex()
         except Exception as e:
             log_error(tenant_dir, "boot-reindex", e)
-    threading.Thread(target=_warm, daemon=True).start()
+    try:
+        srv._reindex(wait=False)
+    except DaemonUnavailable:
+        threading.Thread(target=_warm, daemon=True).start()
     for line in sys.stdin:
         line = line.strip()
         if not line:
