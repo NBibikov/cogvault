@@ -46,6 +46,7 @@ _TENANT_CONFIG_KEYS = {
     "vec_pool": int, "fts_pool": int, "half_life_days": float, "mmr_lambda": float,
     "snippet_chars": int, "fts_stem": bool, "summary_chunk": bool, "query_prefix": str, "doc_prefix": str, "evergreen_re": str, "recursive": bool,
     "strip_frontmatter": bool, "ignore_globs": tuple,
+    "rerank": str, "rerank_top": int, "rerank_chars": int,
 }
 
 
@@ -196,6 +197,15 @@ class Config:
     recursive: bool = False          # True = walk subdirectories (e.g. an Obsidian vault)
     strip_frontmatter: bool = False  # True = drop a leading YAML --- … --- block before chunking
     ignore_globs: tuple[str, ...] = ()  # path globs to skip (e.g. ".obsidian/*", "Templates/*")
+    # ---- cross-encoder rerank (opt-in; runs only where Vault.allow_rerank) ----
+    # On 65 real judged queries (2026-10-13), BAAI/bge-reranker-v2-m3-int8 over
+    # the hybrid top-10, scoring each card's first 800 chars, lifted hit@1 from
+    # 0.585 to 0.80 (17 better, 3 worse). The model needs ~2 GB RAM, so only the
+    # shared daemon (and `eval`) load it. Not part of the index identity:
+    # changing these never re-embeds.
+    rerank: str = ""                 # cross-encoder model; "" = off
+    rerank_top: int = 10             # hybrid candidates the cross-encoder scores
+    rerank_chars: int = 800          # head of the card file it reads
 
 
 # ---- one shared embedder per (process, model) -------------------------------
@@ -412,6 +422,49 @@ def _embedder(model: str):
                 _EMBEDDERS[model] = emb
     return emb
 
+# ---- one shared cross-encoder per (process, model) ----------------------------
+_RERANKERS: dict = {}
+_RERANKERS_LOCK = threading.Lock()
+
+# Rerankers this code uses that an older fastembed does not list. The fleet runs
+# fastembed 0.8.0, which lacks the int8 multilingual BGE reranker; upgrading
+# fastembed changes the backend stamp and forces a full re-embed of every tenant.
+# Same files fastembed 0.9.0 uses, so both share one download.
+_CUSTOM_RERANKERS = {
+    "BAAI/bge-reranker-v2-m3-int8": {"hf": "onnx-community/bge-reranker-v2-m3-ONNX",
+                                     "model_file": "onnx/model_int8.onnx"},
+}
+
+
+def _reranker(model: str):
+    ce = _RERANKERS.get(model)
+    if ce is None:
+        with _RERANKERS_LOCK:
+            ce = _RERANKERS.get(model)
+            if ce is None:
+                from fastembed.rerank.cross_encoder import TextCrossEncoder
+                spec = _CUSTOM_RERANKERS.get(model)
+                if spec and not any(m["model"] == model for m in
+                                    TextCrossEncoder.list_supported_models()):
+                    from fastembed.common.model_description import ModelSource
+                    try:
+                        TextCrossEncoder.add_custom_model(
+                            model=model, sources=ModelSource(hf=spec["hf"]),
+                            model_file=spec["model_file"])
+                    except ValueError:
+                        pass                   # already registered (race)
+                cache = model_cache_dir()
+                os.makedirs(cache, exist_ok=True)
+                ce = TextCrossEncoder(model_name=model, cache_dir=cache)
+                _RERANKERS[model] = ce
+    return ce
+
+
+def loaded_models() -> dict:
+    """Models this process holds in memory (for daemon health checks)."""
+    return {"embedders": sorted(_EMBEDDERS), "rerankers": sorted(_RERANKERS)}
+
+
 def embed(texts: list[str], model: str = DEFAULT_MODEL) -> list[list[float]]:
     return [list(v) for v in _embedder(model).embed(texts)]
 
@@ -627,6 +680,9 @@ class Vault:
         # to the SAME index db, or the two copies flap against each other.
         self.dir = os.path.realpath(os.path.expanduser(tenant_dir))
         self.cfg = config or Config()
+        # Only the shared daemon and `eval` turn this on: the reranker needs
+        # ~2 GB, and one copy per agent session is what the daemon exists to avoid.
+        self.allow_rerank = False
         if not os.path.isdir(self.dir):
             print(f"cogvault: creating new tenant dir {self.dir} "
                   f"(typo'd --tenant paths create empty junk tenants).", file=sys.stderr)
@@ -1031,7 +1087,11 @@ class Vault:
         cold = self.cfg.model not in _EMBEDDERS
         _t0 = time.perf_counter()
         try:
-            out = self._search(query, k, card_type)
+            if self.cfg.rerank and self.allow_rerank:
+                out = self._rerank(query, self._search(
+                    query, max(k, self.cfg.rerank_top), card_type), k)
+            else:
+                out = self._search(query, k, card_type)
         except sqlite3.DatabaseError:
             # Resilient read-path (fleet-safe): a degraded/corrupt index (e.g. an
             # interrupted reindex left vec0 shadow tables inconsistent → "database
@@ -1043,6 +1103,43 @@ class Vault:
         from .obs import log_recall
         log_recall(self.dir, query, out, (time.perf_counter() - _t0) * 1000,
                    card_type=card_type, cold=cold)
+        return out
+
+    def _rerank(self, query: str, hits: list[dict], k: int) -> list[dict]:
+        """Reorder hybrid hits with the cross-encoder, keep k. The doc for each hit
+        is the head of its card file (frontmatter name + description + start of
+        the body), the form the 2026-10-13 experiment measured. On any failure
+        the hybrid order stands: a broken reranker must never break recall."""
+        if len(hits) < 2:
+            return hits[:k]
+        docs = []
+        for h in hits:
+            try:
+                with open(os.path.join(self.dir, h["file"]), encoding="utf-8",
+                          errors="ignore") as f:
+                    docs.append(f.read(self.cfg.rerank_chars))
+            except OSError:
+                docs.append(h.get("text", "")[: self.cfg.rerank_chars])
+        try:
+            scores = [float(x) for x in _reranker(self.cfg.rerank).rerank(query, docs)]
+        except Exception as e:
+            from .obs import log_error
+            log_error(self.dir, "rerank", e, query=query)
+            return hits[:k]
+        order = sorted(range(len(hits)), key=lambda i: -scores[i])
+        out = []
+        for i in order[:k]:
+            h = dict(hits[i])
+            h.pop("related", None)
+            h["rerank"] = round(scores[i], 4)
+            out.append(h)
+        con = self._connect()
+        try:
+            related = self._related(con, out[0]["file"])
+        finally:
+            con.close()
+        if related:
+            out[0]["related"] = related
         return out
 
     def _heal_async(self) -> None:
