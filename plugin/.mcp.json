@@ -2,7 +2,7 @@
   "mcpServers": {
     "cogvault": {
       "command": "uvx",
-      "args": ["cogvault==0.12.1", "mcp", "--tenant", "${COGVAULT_TENANT:-~/.cogvault/memory}"]
+      "args": ["cogvault==0.12.2", "mcp", "--tenant", "${COGVAULT_TENANT:-~/.cogvault/memory}"]
     }
   }
 }
