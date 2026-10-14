@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Require onnxruntime ≥ 1.31.** On the same 0.12.2 code, 1.31 cut recall p50 from
+- **Require onnxruntime ≥ 1.31 on Python 3.11+** (1.31 has no 3.10 build). On the same 0.12.2 code, 1.31 cut recall p50 from
   1.65 s to 1.05 s against 1.27 (10 P-cores, bge-reranker-v2-m3-int8). Embeddings are
   identical (cos 1.000000), so no re-embed; rerank scores move slightly, the order did
   not on six judged tenants (hit@1 equal or higher). fastembed stays as it is.
