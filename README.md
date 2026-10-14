@@ -384,6 +384,15 @@ cogvault daemon            # run in the foreground
 cogvault daemon --status   # ping it: version, loaded models, tenants served
 ```
 
+The daemon unloads a model after 10 minutes without a search or reindex, and loads it
+again on the next recall (~1.5 s extra on that call). Set `--idle-unload SECONDS` or
+`$COGVAULT_IDLE_UNLOAD` (`0` keeps the models loaded). Measured with e5-small and the
+reranker: ~1.8 GB loaded, ~0.4 GB unloaded. ONNX Runtime uses 4 threads
+(`$COGVAULT_THREADS`, `0` = all cores) and no CPU memory arena, so a full reindex peaks
+at ~1 GB instead of keeping several GB after it. A shim that booted while the daemon was
+down waits up to 60 s for it before it loads a model itself, and drops a model it loaded
+as soon as the daemon answers again.
+
 On macOS, run it under launchd with `RunAtLoad` and `KeepAlive` (program arguments
 `cogvault daemon`). After you upgrade cogvault, restart the daemon:
 `launchctl kickstart -k gui/$(id -u)/<label>`.

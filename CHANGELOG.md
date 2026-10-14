@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.12.1 — 2026-10-14 — memory footprint
+
+- **Daemon: 2.6 GB around the clock → ~0.4 GB when idle.** Models unload after 10
+  minutes without a search or reindex (`--idle-unload`, `$COGVAULT_IDLE_UNLOAD`, `0` =
+  never) and free pages go back to the OS (`malloc_zone_pressure_relief` on macOS,
+  `malloc_trim` on Linux). The first recall after an unload takes ~1.5 s longer.
+- **No ONNX CPU memory arena, smaller batches, 4 threads.** The arena kept the peak of
+  every run: embedding 400 chunks left 4.4 GB of footprint; without it, at batch 16,
+  0.75 GB. A full reindex of a 4400-chunk tenant now peaks at ~1 GB. Threads default to
+  4 (`$COGVAULT_THREADS`, `0` = all cores), so a reindex no longer takes every core.
+  Vectors do not change, so no re-embed.
+- **Shim: no stray model copies.** A `cogvault mcp` that booted while the daemon was down
+  loaded the embedding model at once and kept it for the life of the session (two such
+  sessions held 1.9 GB). It now waits up to 60 s for the daemon before it indexes
+  in-process, and drops any model it loaded as soon as the daemon answers.
+- **Fix: concurrent first open of a new index.** Two processes could both see an empty
+  `meta` table and both insert, and the second failed with `UNIQUE constraint failed:
+  meta.key`. The insert is now `INSERT OR IGNORE`.
+
 ## 0.12.0 — 2026-10-13 — shared daemon + cross-encoder reranker
 
 - **Reranker: hit@1 0.60 → 0.80 on 65 real queries.** New tenant option
