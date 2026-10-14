@@ -28,6 +28,8 @@ classifiers = [
 dependencies = [
     "sqlite-vec>=0.1.6",
     "fastembed>=0.4.0",
+    # 1.31: rerank recall p50 1.65 s -> 1.05 s against 1.27, same embeddings.
+    "onnxruntime>=1.31",
 ]
 
 [project.optional-dependencies]

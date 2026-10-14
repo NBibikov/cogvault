@@ -395,7 +395,8 @@ as soon as the daemon answers again.
 
 The reranker has its own thread count (`$COGVAULT_RERANK_THREADS`, default = the
 performance cores on Apple silicon, else 4). It runs only at recall time and is most of
-the recall latency: on 10 P-cores, recall p50 went from 2.3 s (4 threads) to 1.0 s.
+the recall latency: on 10 P-cores, recall p50 went from 2.3 s (4 threads) to 1.65 s, and to 1.05 s
+with onnxruntime 1.31 (that version also cut 4-thread recall to 1.5 s).
 
 On macOS, run it under launchd with `RunAtLoad` and `KeepAlive` (program arguments
 `cogvault daemon`). After you upgrade cogvault, restart the daemon:

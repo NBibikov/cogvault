@@ -1,8 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Require onnxruntime ≥ 1.31.** On the same 0.12.2 code, 1.31 cut recall p50 from
+  1.65 s to 1.05 s against 1.27 (10 P-cores, bge-reranker-v2-m3-int8). Embeddings are
+  identical (cos 1.000000), so no re-embed; rerank scores move slightly, the order did
+  not on six judged tenants (hit@1 equal or higher). fastembed stays as it is.
+
 ## 0.12.2 — 2026-10-14 — faster rerank
 
-- **Recall with rerank: p50 2.3 s → 1.0 s.** The cross-encoder no longer shares the
+- **Recall with rerank: p50 2.3 s → 1.65 s** (onnxruntime 1.27; ~1.05 s on 1.31, see
+  Unreleased). An earlier version of this entry said 1.0 s: that run used onnxruntime
+  1.31, a second variable. The cross-encoder no longer shares the
   4-thread cap of the embedder. It reads `$COGVAULT_RERANK_THREADS` (default = the
   performance cores, `hw.perflevel0.physicalcpu`; 4 when unknown; `0` = all cores).
   Efficiency cores slow it down, so all 14 cores ranked slower than 10. A reindex does
