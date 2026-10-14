@@ -215,6 +215,31 @@ class Config:
 # under the wrong model name — permanent silent recall degradation.
 _EMBEDDERS: dict = {}
 _EMBEDDERS_LOCK = threading.Lock()
+_LAST_USED: dict = {}                    # model -> time.monotonic() of last use
+
+# Texts per ONNX run. fastembed's default (256) with a 512-token window made one
+# reindex batch hold GBs of activations. Measured 2026-10-14 on e5-small, 400
+# chunks of 700 chars: batch 256 + arena = 4.4 GB footprint after embed; batch
+# 8-16 without the arena = 0.75 GB, at the same throughput on 4 threads.
+EMBED_BATCH = 16
+
+
+def _ort_kwargs() -> dict:
+    """ONNX Runtime options for every model this process loads.
+
+    The CPU memory arena keeps the peak of every run and never gives it back to
+    the OS: the daemon sat at 2.6 GB with zero traffic. Off, the runs allocate
+    per call and memory returns after them (no measurable latency change).
+    Threads: onnxruntime takes every core by default, so a fleet reindex spiked
+    the whole machine. $COGVAULT_THREADS sets it; 0 = onnxruntime default."""
+    kw: dict = {"enable_cpu_mem_arena": False}
+    try:
+        threads = int(os.environ.get("COGVAULT_THREADS") or 4)
+    except ValueError:
+        threads = 4
+    if threads > 0:
+        kw["threads"] = threads
+    return kw
 def _pkg_version() -> str:
     from . import __version__
     return __version__
@@ -395,6 +420,7 @@ def card_summary(text: str) -> str | None:
 
 
 def _embedder(model: str):
+    _LAST_USED[model] = time.monotonic()
     emb = _EMBEDDERS.get(model)
     if emb is None:
         with _EMBEDDERS_LOCK:
@@ -418,7 +444,8 @@ def _embedder(model: str):
                     _register_custom(model)
                     cache = model_cache_dir()
                     os.makedirs(cache, exist_ok=True)
-                    emb = TextEmbedding(model_name=model, cache_dir=cache)
+                    emb = TextEmbedding(model_name=model, cache_dir=cache,
+                                        **_ort_kwargs())
                 _EMBEDDERS[model] = emb
     return emb
 
@@ -437,6 +464,7 @@ _CUSTOM_RERANKERS = {
 
 
 def _reranker(model: str):
+    _LAST_USED[model] = time.monotonic()
     ce = _RERANKERS.get(model)
     if ce is None:
         with _RERANKERS_LOCK:
@@ -455,7 +483,7 @@ def _reranker(model: str):
                         pass                   # already registered (race)
                 cache = model_cache_dir()
                 os.makedirs(cache, exist_ok=True)
-                ce = TextCrossEncoder(model_name=model, cache_dir=cache)
+                ce = TextCrossEncoder(model_name=model, cache_dir=cache, **_ort_kwargs())
                 _RERANKERS[model] = ce
     return ce
 
@@ -465,8 +493,44 @@ def loaded_models() -> dict:
     return {"embedders": sorted(_EMBEDDERS), "rerankers": sorted(_RERANKERS)}
 
 
+def release_models(idle_s: float | None = None) -> list[str]:
+    """Drop loaded models and give their memory back to the OS.
+
+    idle_s=None drops all of them; otherwise only those unused for idle_s
+    seconds. A thread that already holds a model keeps its reference and
+    finishes; the next call loads the model again (~1 s). Returns the names
+    dropped. Tokenizers stay: they are small and count_tokens needs them."""
+    now = time.monotonic()
+    dropped = []
+    for cache, lock in ((_EMBEDDERS, _EMBEDDERS_LOCK), (_RERANKERS, _RERANKERS_LOCK)):
+        with lock:
+            for name in list(cache):
+                if idle_s is None or now - _LAST_USED.get(name, 0.0) >= idle_s:
+                    del cache[name]
+                    dropped.append(name)
+    if dropped:
+        _return_memory()
+    return dropped
+
+
+def _return_memory() -> None:
+    """Collect, then ask the allocator to give free pages back. Without the
+    second step macOS keeps them: an unloaded e5-small left 480 MB of footprint,
+    with malloc_zone_pressure_relief 70 MB (measured 2026-10-14)."""
+    import gc
+    gc.collect()
+    try:
+        import ctypes
+        if sys.platform == "darwin":
+            ctypes.CDLL(None).malloc_zone_pressure_relief(None, 0)
+        elif sys.platform.startswith("linux"):
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass                                   # best effort: memory is freed anyway
+
+
 def embed(texts: list[str], model: str = DEFAULT_MODEL) -> list[list[float]]:
-    return [list(v) for v in _embedder(model).embed(texts)]
+    return [list(v) for v in _embedder(model).embed(texts, batch_size=EMBED_BATCH)]
 
 
 # ---- helpers ----------------------------------------------------------------
@@ -763,7 +827,11 @@ class Vault:
             want = {"model": self.cfg.model, "dim": str(self.cfg.dim),
                     "backend": embed_backend(), "chunker": chunker_id(self.cfg.model, self.cfg.summary_chunk),
                     "schema": str(SCHEMA_VERSION)}
-            con.executemany("INSERT INTO meta(key,value) VALUES(?,?)", want.items())
+            # OR IGNORE: two processes opening a new index both see an empty
+            # meta and both insert; the loser failed with UNIQUE constraint.
+            # Both stamp the same values, so the first one wins.
+            con.executemany("INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
+                            want.items())
         con.commit()
         return con
 

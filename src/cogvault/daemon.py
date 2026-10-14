@@ -19,6 +19,19 @@ from . import __version__
 
 PROTO = 1
 
+# Unload a model after this long without a search or reindex. Recall is sparse
+# (a few calls per session hour), and the models held 2.6 GB around the clock;
+# a reload costs ~1 s on the next recall. $COGVAULT_IDLE_UNLOAD overrides it,
+# 0 keeps the models loaded.
+DEFAULT_IDLE_UNLOAD = 600.0
+
+
+def idle_unload_from_env() -> float:
+    try:
+        return max(0.0, float(os.environ.get("COGVAULT_IDLE_UNLOAD") or DEFAULT_IDLE_UNLOAD))
+    except ValueError:
+        return DEFAULT_IDLE_UNLOAD
+
 
 def default_socket() -> str:
     """$COGVAULT_SOCKET, else ~/.cache/cogvault/daemon.sock (next to the indexes)."""
@@ -92,11 +105,37 @@ class DaemonClient:
 
 
 class Daemon:
-    def __init__(self):
+    def __init__(self, idle_unload: float = 0.0):
         self._vaults: dict = {}
         self._vaults_lock = threading.Lock()
         self._reindex_locks: dict[str, threading.Lock] = {}
         self.started = time.time()
+        self.idle_unload = idle_unload
+        self._stop = threading.Event()
+
+    def start_reaper(self) -> None:
+        """Unload models idle for `idle_unload` seconds (no-op when 0)."""
+        if self.idle_unload <= 0:
+            return
+
+        def run():
+            from .core import release_models
+            # Check often enough that a model lives at most ~1.25x the limit.
+            step = max(1.0, self.idle_unload / 4)
+            while not self._stop.wait(step):
+                try:
+                    dropped = release_models(self.idle_unload)
+                except Exception as e:           # pragma: no cover
+                    from .obs import log_error
+                    log_error("-", "daemon-unload", e)
+                    continue
+                if dropped:
+                    print(f"cogvault daemon: unloaded idle {', '.join(dropped)}",
+                          file=sys.stderr, flush=True)
+        threading.Thread(target=run, name="cogvault-reaper", daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
 
     def vault(self, tenant: str, cfg_dict: dict):
         from .core import Vault
@@ -147,6 +186,7 @@ class Daemon:
                 return {"ok": True, "version": __version__, "proto": PROTO,
                         "pid": os.getpid(), "uptime_s": round(time.time() - self.started),
                         "tenants": sorted({k[0] for k in self._vaults}),
+                        "idle_unload_s": self.idle_unload,
                         **loaded_models()}
             tenant = req.get("tenant")
             if not tenant:
@@ -191,7 +231,7 @@ class _Server(socketserver.ThreadingUnixStreamServer):
     request_queue_size = 128
 
 
-def make_server(path: str | None = None) -> _Server:
+def make_server(path: str | None = None, idle_unload: float = 0.0) -> _Server:
     """Bind the socket (mode 600). Refuses to start over a live daemon; removes
     a stale socket file left by a crash."""
     path = path or default_socket()
@@ -208,13 +248,14 @@ def make_server(path: str | None = None) -> _Server:
         srv = _Server(path, _Handler)
     finally:
         os.umask(old)
-    srv.daemon = Daemon()
+    srv.daemon = Daemon(idle_unload)
     return srv
 
 
-def serve(path: str | None = None) -> None:
+def serve(path: str | None = None, idle_unload: float | None = None) -> None:
     import signal
-    srv = make_server(path)
+    srv = make_server(path, idle_unload_from_env() if idle_unload is None else idle_unload)
+    srv.daemon.start_reaper()
     # launchd stops the daemon with SIGTERM; exit through `finally` so the
     # socket file goes away with the process.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
