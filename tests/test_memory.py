@@ -159,3 +159,20 @@ def test_boot_falls_back_after_wait(sock, tmpvault, monkeypatch):
     monkeypatch.setattr(shim.vault, "reindex", lambda *a, **k: calls.append(1))
     _boot_reindex(shim, wait_s=0.2, step=0.05)
     assert calls == [1]
+
+
+def test_ort_kwargs_rerank_threads(monkeypatch):
+    monkeypatch.delenv("COGVAULT_RERANK_THREADS", raising=False)
+    monkeypatch.setenv("COGVAULT_THREADS", "2")
+    monkeypatch.setattr(core, "_perf_cores", lambda: 10)
+    assert core._ort_kwargs(rerank=True)["threads"] == 10   # own default, not $COGVAULT_THREADS
+    monkeypatch.setenv("COGVAULT_RERANK_THREADS", "6")
+    assert core._ort_kwargs(rerank=True)["threads"] == 6
+    monkeypatch.setenv("COGVAULT_RERANK_THREADS", "0")
+    assert "threads" not in core._ort_kwargs(rerank=True)
+    monkeypatch.setenv("COGVAULT_RERANK_THREADS", "many")
+    assert core._ort_kwargs(rerank=True)["threads"] == 10
+
+
+def test_perf_cores_positive():
+    assert core._perf_cores() > 0

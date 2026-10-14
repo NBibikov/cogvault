@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Recall with rerank: p50 2.3 s → 1.0 s.** The cross-encoder no longer shares the
+  4-thread cap of the embedder. It reads `$COGVAULT_RERANK_THREADS` (default = the
+  performance cores, `hw.perflevel0.physicalcpu`; 4 when unknown; `0` = all cores).
+  Efficiency cores slow it down, so all 14 cores ranked slower than 10. A reindex does
+  not use the reranker, so its 4-thread cap stays. Same footprint, same results.
+- **Search output shows the rerank score.** Reranked hits came in cross-encoder order
+  but printed the hybrid score, so the column looked unsorted (`cogvault search` and the
+  MCP `cogvault_recall` text). The order does not change.
+
 ## 0.12.1 — 2026-10-14 — memory footprint
 
 - **Daemon: 2.6 GB around the clock → ~0.4 GB when idle.** Models unload after 10

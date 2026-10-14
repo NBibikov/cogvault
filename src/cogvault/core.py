@@ -224,19 +224,40 @@ _LAST_USED: dict = {}                    # model -> time.monotonic() of last use
 EMBED_BATCH = 16
 
 
-def _ort_kwargs() -> dict:
+def _perf_cores() -> int:
+    """Performance-core count (Apple silicon), else 4. Efficiency cores slow an
+    ONNX run down: on an M-series with 10 P + 4 E cores, 14 threads ranked
+    slower than 10."""
+    try:
+        import subprocess
+        n = int(subprocess.run(["sysctl", "-n", "hw.perflevel0.physicalcpu"],
+                               capture_output=True, text=True, timeout=2).stdout)
+        return n if n > 0 else 4
+    except Exception:
+        return 4
+
+
+def _ort_kwargs(rerank: bool = False) -> dict:
     """ONNX Runtime options for every model this process loads.
 
     The CPU memory arena keeps the peak of every run and never gives it back to
     the OS: the daemon sat at 2.6 GB with zero traffic. Off, the runs allocate
     per call and memory returns after them (no measurable latency change).
     Threads: onnxruntime takes every core by default, so a fleet reindex spiked
-    the whole machine. $COGVAULT_THREADS sets it; 0 = onnxruntime default."""
+    the whole machine. $COGVAULT_THREADS sets it; 0 = onnxruntime default.
+
+    The reranker gets its own count ($COGVAULT_RERANK_THREADS, default = the
+    performance cores). It runs only at recall time for ~1-2 s and is most of
+    the recall latency; it never runs during a reindex. Measured 2026-10-14
+    (bge-reranker-v2-m3-int8, top 10, 10 P-cores): recall p50 2.33 s on 4
+    threads, 1.75 s on 8, 1.65 s on 10, same footprint."""
     kw: dict = {"enable_cpu_mem_arena": False}
+    var, default = (("COGVAULT_RERANK_THREADS", None) if rerank
+                    else ("COGVAULT_THREADS", 4))
     try:
-        threads = int(os.environ.get("COGVAULT_THREADS") or 4)
+        threads = int(os.environ.get(var) or default or _perf_cores())
     except ValueError:
-        threads = 4
+        threads = default or _perf_cores()
     if threads > 0:
         kw["threads"] = threads
     return kw
@@ -483,7 +504,8 @@ def _reranker(model: str):
                         pass                   # already registered (race)
                 cache = model_cache_dir()
                 os.makedirs(cache, exist_ok=True)
-                ce = TextCrossEncoder(model_name=model, cache_dir=cache, **_ort_kwargs())
+                ce = TextCrossEncoder(model_name=model, cache_dir=cache,
+                                      **_ort_kwargs(rerank=True))
                 _RERANKERS[model] = ce
     return ce
 

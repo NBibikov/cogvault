@@ -393,6 +393,10 @@ at ~1 GB instead of keeping several GB after it. A shim that booted while the da
 down waits up to 60 s for it before it loads a model itself, and drops a model it loaded
 as soon as the daemon answers again.
 
+The reranker has its own thread count (`$COGVAULT_RERANK_THREADS`, default = the
+performance cores on Apple silicon, else 4). It runs only at recall time and is most of
+the recall latency: on 10 P-cores, recall p50 went from 2.3 s (4 threads) to 1.0 s.
+
 On macOS, run it under launchd with `RunAtLoad` and `KeepAlive` (program arguments
 `cogvault daemon`). After you upgrade cogvault, restart the daemon:
 `launchctl kickstart -k gui/$(id -u)/<label>`.

@@ -235,7 +235,7 @@ class MCPServer:
                                 "so the next recall lands.")
                     else:
                         def _block(r):
-                            b = f"[{r['score']}] {r['file']}\n{r['text']}"
+                            b = f"[{r.get('rerank', r['score'])}] {r['file']}\n{r['text']}"
                             if r.get("related"):
                                 b += f"\nRelated: {', '.join(r['related'])}"
                             return b

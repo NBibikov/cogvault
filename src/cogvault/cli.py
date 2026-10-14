@@ -227,7 +227,9 @@ def _run(a, v, cfg) -> int:
             print(json.dumps(res, indent=2))
         else:
             for r in res:
-                print(f"  {r['score']:>8}  {r['file']}")
+                # Reranked hits are in cross-encoder order; show that score,
+                # not the hybrid one, so the column reads top-down.
+                print(f"  {r.get('rerank', r['score']):>8}  {r['file']}")
                 print(f"            {r['snippet'][:100]}")
                 if r.get("related"):
                     print(f"            related: {', '.join(r['related'])}")
