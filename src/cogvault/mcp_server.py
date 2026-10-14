@@ -5,13 +5,19 @@ Run:  cogvault mcp --tenant ~/agent/memory
 Tools: cogvault_recall (hybrid search), cogvault_record (append a markdown card).
 """
 from __future__ import annotations
-import sys, json, os, datetime, threading
-from .core import Vault, Config
+import sys, json, os, datetime, threading, time
+from .core import Vault, Config, loaded_models, release_models
 from .obs import log_error
 from .daemon import DaemonClient, DaemonUnavailable
 from . import __version__
 
 PROTOCOL = "2024-11-05"
+
+# How long a booting shim waits for the daemon before it indexes in-process.
+# launchd restarts a dead daemon within ~10 s. Sessions that booted in such a
+# gap loaded the embedding model themselves and kept ~1 GB each for their whole
+# life (two gabi sessions, 1.9 GB, found 2026-10-14).
+BOOT_DAEMON_WAIT = 60.0
 
 
 _TYPES = ("project", "feedback", "reference", "user")
@@ -271,16 +277,26 @@ class MCPServer:
             self._fallback_logged = True
             log_error(self.tenant_dir, "daemon-fallback", e)
 
+    @staticmethod
+    def _daemon_back() -> None:
+        # The daemon answered: a model an earlier fallback loaded here is dead
+        # weight now. Drop it, or this session holds ~1 GB until it exits.
+        if any(loaded_models().values()):
+            release_models()
+
     def _search(self, query: str, k: int, card_type: str | None) -> list[dict]:
         try:
-            return self.daemon.search(self.tenant_dir, self.vault.cfg, query, k, card_type)
+            hits = self.daemon.search(self.tenant_dir, self.vault.cfg, query, k, card_type)
         except DaemonUnavailable as e:
             self._fallback(e)
             return self.vault.search(query, k=k, card_type=card_type)
+        self._daemon_back()
+        return hits
 
     def _reindex(self, wait: bool) -> None:
         try:
             self.daemon.reindex(self.tenant_dir, self.vault.cfg, wait=wait)
+            self._daemon_back()
         except DaemonUnavailable as e:
             self._fallback(e)
             if wait:
@@ -295,6 +311,22 @@ class MCPServer:
                                       "error": {"code": code, "message": msg}}
 
 
+def _boot_reindex(srv: MCPServer, wait_s: float, step: float = 2.0) -> None:
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            srv._reindex(wait=False)
+            return
+        except DaemonUnavailable:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(step)
+    try:
+        srv.vault.reindex()
+    except Exception as e:
+        log_error(srv.tenant_dir, "boot-reindex", e)
+
+
 def serve(tenant_dir: str, cfg: Config):
     srv = MCPServer(tenant_dir, cfg)
     # Warm the index in the background. Done inline, a model or chunker change
@@ -303,15 +335,10 @@ def serve(tenant_dir: str, cfg: Config):
     # during the rebuild read the previous index (the rebuild is one atomic
     # txn), so nothing is lost by not waiting.
     # With the daemon up, it reindexes (and loads the models) on its side.
-    def _warm():
-        try:
-            srv.vault.reindex()
-        except Exception as e:
-            log_error(tenant_dir, "boot-reindex", e)
-    try:
-        srv._reindex(wait=False)
-    except DaemonUnavailable:
-        threading.Thread(target=_warm, daemon=True).start()
+    # When it is down, wait for launchd to bring it back before loading the
+    # models here (see BOOT_DAEMON_WAIT).
+    threading.Thread(target=_boot_reindex, args=(srv, BOOT_DAEMON_WAIT),
+                     daemon=True).start()
     for line in sys.stdin:
         line = line.strip()
         if not line:

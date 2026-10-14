@@ -49,6 +49,9 @@ def main(argv=None):
                          "~/.cache/cogvault/daemon.sock)")
     dm.add_argument("--status", action="store_true",
                     help="Ping the running daemon and print its state; exit 1 if down")
+    dm.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
+                    help="Unload models after this many idle seconds; 0 = never "
+                         "(default: $COGVAULT_IDLE_UNLOAD or 600)")
 
     st = sub.add_parser("stats", help="Index stats")
     st.add_argument("--tenant", required=True)
@@ -94,7 +97,7 @@ def main(argv=None):
             except DaemonUnavailable as e:
                 print(f"cogvault daemon: not running ({e})", file=sys.stderr)
                 return 1
-        serve(a.socket)
+        serve(a.socket, a.idle_unload)
         return 0
 
     if a.cmd == "stats":
