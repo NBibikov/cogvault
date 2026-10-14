@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.2 — 2026-10-14 — faster rerank
 
 - **Recall with rerank: p50 2.3 s → 1.0 s.** The cross-encoder no longer shares the
   4-thread cap of the embedder. It reads `$COGVAULT_RERANK_THREADS` (default = the
